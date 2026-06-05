@@ -23,6 +23,7 @@ main().catch((error) => {
 
 async function main() {
   printHeader();
+  requireSupportedNode();
   requireCommand(npmCommand, [...npmArgsPrefix, "--version"], "npm");
   requireCommand(
     "ollama",
@@ -60,6 +61,15 @@ async function main() {
     }
     process.exit(code ?? 0);
   });
+}
+
+function requireSupportedNode() {
+  const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
+  if (major < 20) {
+    throw new Error(
+      `Node.js 20 or newer is required. Current version is ${process.versions.node}. Run scripts/start-local for automatic prerequisite installation.`,
+    );
+  }
 }
 
 function printHeader() {

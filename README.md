@@ -27,14 +27,24 @@ model in Ollama. You can override it with `OLLAMA_MODEL`.
 
 ## One-Command Local Setup
 
-Clone the repo, then run:
+Clone the repo, then run the launcher for your OS.
+
+Windows:
+
+```powershell
+.\start-windows.cmd
+```
+
+macOS/Linux:
 
 ```bash
-npm run local
+bash ./start-unix.sh
 ```
 
 That command will:
 
+- install Node.js/npm if missing
+- install Ollama if missing
 - install npm dependencies
 - start Ollama if it is not already running
 - pull `qwen3:latest` if it is not already installed
@@ -50,7 +60,7 @@ http://localhost:3000
 On first run, Convex writes `.env.local` with the local deployment URL. That
 file is intentionally ignored by Git.
 
-You can also run the platform wrappers:
+You can also run the scripts directly:
 
 ```powershell
 .\scripts\start-local.ps1
@@ -58,6 +68,22 @@ You can also run the platform wrappers:
 
 ```bash
 ./scripts/start-local.sh
+```
+
+To install everything without starting the server yet:
+
+```powershell
+.\scripts\start-local.ps1 -SetupOnly
+```
+
+```bash
+bash ./scripts/start-local.sh --setup-only
+```
+
+If Node/npm and Ollama are already installed, this shorter command also works:
+
+```bash
+npm run local
 ```
 
 ## Optional Configuration
