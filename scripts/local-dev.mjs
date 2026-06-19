@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -29,6 +32,17 @@ const explicitVisionModel = Boolean(
     process.env.OLLAMA_VISION_MODEL !== modelProfile.vision,
 );
 const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
+const modelArtifactDir = path.resolve(
+  root,
+  process.env.OLLAMA_MODEL_ARTIFACT_DIR || path.join(".cache", "ollama-models"),
+);
+const modelMirrorBaseUrl = normalizeOptionalUrl(
+  process.env.OLLAMA_MODEL_MIRROR_BASE_URL || modelConfig.mirrorBaseUrl,
+);
+const modelDownloadTimeoutMs = parsePositiveInteger(
+  process.env.OLLAMA_MODEL_DOWNLOAD_TIMEOUT_MS,
+  30 * 60 * 1000,
+);
 const npmCommand = process.env.npm_execpath
   ? process.execPath
   : process.platform === "win32"
@@ -129,6 +143,9 @@ function printHeader() {
   console.log("================");
   console.log(`Workspace: ${root}`);
   console.log(`Ollama: ${ollamaBaseUrl}`);
+  if (modelMirrorBaseUrl) {
+    console.log(`Model mirror: ${modelMirrorBaseUrl}`);
+  }
   console.log(`System memory: ${systemMemoryGb.toFixed(1)} GB`);
   console.log(
     `Model profile: ${modelProfileName}${process.env.LOCAL_MODEL_PROFILE ? " (configured)" : " (auto)"}`,
@@ -310,8 +327,229 @@ async function ensureOllamaModel(name) {
     return true;
   }
 
-  console.log(`Pulling ${name}. This can take a few minutes the first time...`);
+  console.log(`Preparing ${name}. This can take a few minutes the first time...`);
+  if (await ensureOllamaModelFromArtifact(name)) {
+    return true;
+  }
+
+  console.log(`Pulling ${name} from Ollama...`);
   return runOptional(`Pulling ${name}`, "ollama", ["pull", name]);
+}
+
+async function ensureOllamaModelFromArtifact(name) {
+  const artifact = getModelArtifact(name);
+  let hasArtifact = fs.existsSync(artifact.path);
+
+  if (!hasArtifact && artifact.url) {
+    console.log(`Downloading mirrored model artifact for ${name}...`);
+    try {
+      await downloadFile(artifact.url, artifact.path);
+      hasArtifact = true;
+    } catch (error) {
+      console.warn(
+        `Mirror download for ${name} failed: ${formatErrorMessage(error)}`,
+      );
+    }
+  }
+
+  if (!hasArtifact && artifact.manifestUrl) {
+    console.log(`Downloading chunked mirrored model artifact for ${name}...`);
+    try {
+      await downloadChunkedArtifact(artifact);
+      hasArtifact = true;
+    } catch (error) {
+      console.warn(
+        `Chunked mirror download for ${name} failed: ${formatErrorMessage(error)}`,
+      );
+    }
+  }
+
+  if (!hasArtifact) {
+    return false;
+  }
+
+  console.log(`Using local model artifact for ${name}: ${artifact.path}`);
+
+  if (artifact.sha256) {
+    const actualHash = await sha256File(artifact.path);
+    if (actualHash !== artifact.sha256) {
+      console.warn(
+        `Local model artifact hash mismatch for ${name}. Expected ${artifact.sha256}, got ${actualHash}.`,
+      );
+      return false;
+    }
+  }
+
+  const modelfilePath = writeArtifactModelfile(name, artifact.path, artifact);
+  return runOptional(`Creating ${name} from local artifact`, "ollama", [
+    "create",
+    name,
+    "-f",
+    modelfilePath,
+  ], {
+    cwd: path.dirname(artifact.path),
+  });
+}
+
+function getModelArtifact(name) {
+  const configured = getConfiguredModelArtifact(name);
+  const fileName =
+    typeof configured.fileName === "string" && configured.fileName.trim()
+      ? configured.fileName.trim()
+      : `${sanitizeModelName(name)}.gguf`;
+  const localPath =
+    typeof configured.path === "string" && configured.path.trim()
+      ? resolveWorkspacePath(configured.path.trim())
+      : path.join(modelArtifactDir, fileName);
+  const remotePath =
+    typeof configured.remotePath === "string" && configured.remotePath.trim()
+      ? configured.remotePath.trim()
+      : fileName;
+  const url =
+    typeof configured.url === "string" && configured.url.trim()
+      ? configured.url.trim()
+      : modelMirrorBaseUrl
+        ? joinUrl(modelMirrorBaseUrl, remotePath)
+        : "";
+  const manifestUrl =
+    typeof configured.manifestUrl === "string" && configured.manifestUrl.trim()
+      ? configured.manifestUrl.trim()
+      : url
+        ? `${url}.manifest.json`
+        : "";
+
+  return {
+    path: localPath,
+    url,
+    manifestUrl,
+    sha256: normalizeSha256(configured.sha256),
+    modelfile: normalizeModelfileLines(configured.modelfile),
+  };
+}
+
+function getConfiguredModelArtifact(name) {
+  const artifact = modelConfig.artifacts?.[name];
+  return artifact && typeof artifact === "object" && !Array.isArray(artifact)
+    ? artifact
+    : {};
+}
+
+function writeArtifactModelfile(name, artifactPath, artifact) {
+  const artifactDir = path.dirname(artifactPath);
+  fs.mkdirSync(artifactDir, { recursive: true });
+
+  const modelfilePath = path.join(
+    artifactDir,
+    `${sanitizeModelName(name)}.Modelfile`,
+  );
+  const artifactFileName = path.basename(artifactPath).replaceAll("\\", "/");
+  const modelfileLines = [
+    `FROM ${formatModelfilePath(`./${artifactFileName}`)}`,
+    ...artifact.modelfile,
+  ];
+
+  fs.writeFileSync(modelfilePath, `${modelfileLines.join("\n")}\n`);
+  return modelfilePath;
+}
+
+function formatModelfilePath(value) {
+  return /[\s"#]/.test(value) ? JSON.stringify(value) : value;
+}
+
+function normalizeModelfileLines(value) {
+  if (Array.isArray(value)) {
+    return value.filter((line) => typeof line === "string" && line.trim());
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    return value
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+async function downloadChunkedArtifact(artifact) {
+  const manifest = await requestJson(artifact.manifestUrl);
+  if (!manifest || !Array.isArray(manifest.parts) || manifest.parts.length === 0) {
+    throw new Error("Chunk manifest did not include any parts");
+  }
+
+  fs.mkdirSync(path.dirname(artifact.path), { recursive: true });
+  const tempDir = `${artifact.path}.parts`;
+  const tempArtifactPath = `${artifact.path}.download`;
+  fs.rmSync(tempDir, { recursive: true, force: true });
+  fs.rmSync(tempArtifactPath, { force: true });
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  const manifestBaseUrl = artifact.manifestUrl.slice(
+    0,
+    artifact.manifestUrl.lastIndexOf("/") + 1,
+  );
+  const partPaths = [];
+
+  for (let index = 0; index < manifest.parts.length; index += 1) {
+    const part = manifest.parts[index];
+    const partUrl = resolveManifestPartUrl(part, manifestBaseUrl);
+    if (!partUrl) {
+      throw new Error(`Chunk ${index + 1} did not include a path or URL`);
+    }
+
+    const partPath = path.join(tempDir, `part-${String(index).padStart(4, "0")}`);
+    console.log(
+      `Downloading model chunk ${index + 1} of ${manifest.parts.length}...`,
+    );
+    await downloadFile(partUrl, partPath);
+    if (part.sha256) {
+      const actualPartHash = await sha256File(partPath);
+      const expectedPartHash = normalizeSha256(part.sha256);
+      if (expectedPartHash && actualPartHash !== expectedPartHash) {
+        throw new Error(
+          `Chunk ${index + 1} hash mismatch. Expected ${expectedPartHash}, got ${actualPartHash}.`,
+        );
+      }
+    }
+    partPaths.push(partPath);
+  }
+
+  await concatenateFiles(partPaths, tempArtifactPath);
+  fs.renameSync(tempArtifactPath, artifact.path);
+  fs.rmSync(tempDir, { recursive: true, force: true });
+}
+
+function resolveManifestPartUrl(part, manifestBaseUrl) {
+  if (typeof part.url === "string" && part.url.trim()) {
+    return part.url.trim();
+  }
+
+  const relativePath =
+    typeof part.path === "string" && part.path.trim()
+      ? part.path.trim()
+      : typeof part.key === "string" && part.key.trim()
+        ? part.key.trim()
+        : "";
+  return relativePath ? new URL(relativePath, manifestBaseUrl).toString() : "";
+}
+
+async function concatenateFiles(sourcePaths, targetPath) {
+  const output = fs.createWriteStream(targetPath);
+  try {
+    for (const sourcePath of sourcePaths) {
+      await pipeline(fs.createReadStream(sourcePath), output, { end: false });
+    }
+  } finally {
+    await new Promise((resolve, reject) => {
+      output.end((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
 }
 
 async function canReachOllama() {
@@ -334,7 +572,9 @@ async function getOllamaModels() {
 
 function requestJson(url) {
   return new Promise((resolve, reject) => {
-    const request = http.get(url, (response) => {
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === "https:" ? https : http;
+    const request = client.get(parsedUrl, (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
@@ -360,14 +600,95 @@ function requestJson(url) {
   });
 }
 
+function downloadFile(url, targetPath, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 5) {
+      reject(new Error("Too many redirects"));
+      return;
+    }
+
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === "https:" ? https : http;
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    const tempPath = `${targetPath}.download`;
+    fs.rmSync(tempPath, { force: true });
+
+    const request = client.get(parsedUrl, (response) => {
+      const statusCode = response.statusCode ?? 500;
+      const location = response.headers.location;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+        response.resume();
+        downloadFile(new URL(location, parsedUrl).toString(), targetPath, redirectCount + 1)
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
+
+      if (statusCode >= 400) {
+        response.resume();
+        reject(new Error(`HTTP ${statusCode}`));
+        return;
+      }
+
+      const totalBytes = Number(response.headers["content-length"] ?? 0);
+      let downloadedBytes = 0;
+      let lastProgressAt = Date.now();
+      const output = fs.createWriteStream(tempPath);
+
+      response.on("data", (chunk) => {
+        downloadedBytes += chunk.length;
+        if (Date.now() - lastProgressAt >= 10_000) {
+          lastProgressAt = Date.now();
+          console.log(
+            totalBytes > 0
+              ? `Downloaded ${formatBytes(downloadedBytes)} of ${formatBytes(totalBytes)}...`
+              : `Downloaded ${formatBytes(downloadedBytes)}...`,
+          );
+        }
+      });
+
+      response.pipe(output);
+      output.on("finish", () => {
+        output.close(() => {
+          fs.renameSync(tempPath, targetPath);
+          resolve();
+        });
+      });
+      output.on("error", (error) => {
+        response.destroy();
+        fs.rmSync(tempPath, { force: true });
+        reject(error);
+      });
+    });
+
+    request.on("error", (error) => {
+      fs.rmSync(tempPath, { force: true });
+      reject(error);
+    });
+    request.setTimeout(modelDownloadTimeoutMs, () => {
+      request.destroy(new Error("Download timed out"));
+    });
+  });
+}
+
+function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const input = fs.createReadStream(filePath);
+    input.on("data", (chunk) => hash.update(chunk));
+    input.on("end", () => resolve(hash.digest("hex")));
+    input.on("error", reject);
+  });
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function runOptional(label, command, args) {
+function runOptional(label, command, args, options = {}) {
   console.log(`${label}...`);
   const result = spawnSync(command, args, {
-    cwd: root,
+    cwd: options.cwd ?? root,
     env: process.env,
     stdio: "inherit",
     shell: false,
@@ -379,6 +700,60 @@ function runOptional(label, command, args) {
   }
 
   return true;
+}
+
+function sanitizeModelName(name) {
+  return name.replace(/[^A-Za-z0-9._-]+/g, "-");
+}
+
+function resolveWorkspacePath(value) {
+  return path.isAbsolute(value) ? value : path.resolve(root, value);
+}
+
+function joinUrl(baseUrl, remotePath) {
+  const encodedPath = remotePath
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `${baseUrl.replace(/\/+$/, "")}/${encodedPath}`;
+}
+
+function normalizeOptionalUrl(value) {
+  return typeof value === "string" && value.trim()
+    ? value.trim().replace(/\/+$/, "")
+    : "";
+}
+
+function normalizeSha256(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value.trim())
+    ? value.trim().toLowerCase()
+    : "";
+}
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function formatErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function readModelConfig() {

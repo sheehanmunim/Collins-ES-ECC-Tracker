@@ -234,9 +234,7 @@ export const listWhiteboardPositions = query({
 
     const positions = await ctx.db
       .query("crWhiteboardPositions")
-      .withIndex("by_userKey", (q) =>
-        q.eq("userKey", identity.tokenIdentifier),
-      )
+      .withIndex("by_userKey", (q) => q.eq("userKey", identity.tokenIdentifier))
       .take(500);
 
     return positions.map((position) => ({
@@ -388,7 +386,10 @@ export const create = mutation({
       meetingDate: cleanDate(args.meetingDate),
       meetingTimeEst: cleanText(args.meetingTimeEst, ""),
       ncdocNumber: cleanText(args.ncdocNumber, ""),
-      classGateMilitarySupplierEc: cleanText(args.classGateMilitarySupplierEc, ""),
+      classGateMilitarySupplierEc: cleanText(
+        args.classGateMilitarySupplierEc,
+        "",
+      ),
       responsibleIpts: cleanList(args.responsibleIpts),
       enginePrograms: cleanList(args.enginePrograms),
       componentModels: cleanList(args.componentModels),
@@ -528,10 +529,16 @@ export const update = mutation({
       patch.targetDate = cleanDate(args.targetDate);
     }
     if (args.submittedDate !== undefined) {
-      patch.submittedDate = cleanText(args.submittedDate, existing.submittedDate);
+      patch.submittedDate = cleanText(
+        args.submittedDate,
+        existing.submittedDate,
+      );
     }
     if (args.description !== undefined) {
-      patch.description = cleanText(args.description, "No description provided.");
+      patch.description = cleanText(
+        args.description,
+        "No description provided.",
+      );
     }
     if (args.businessImpact !== undefined) {
       patch.businessImpact = cleanText(args.businessImpact, "Not specified.");
@@ -597,7 +604,8 @@ export const update = mutation({
       patch.quorum = cleanList(args.quorum);
     }
     if (args.documentationNotificationStatus !== undefined) {
-      patch.documentationNotificationStatus = args.documentationNotificationStatus;
+      patch.documentationNotificationStatus =
+        args.documentationNotificationStatus;
     }
     if (args.preMeetingReviewStatus !== undefined) {
       patch.preMeetingReviewStatus = args.preMeetingReviewStatus;
@@ -674,6 +682,7 @@ export const upsertFromAssistant = mutation({
     disposition: v.optional(v.string()),
     oocApprovalStatus: v.optional(taskState),
     closureNotificationStatus: v.optional(taskState),
+    cmWorkingListStatus: v.optional(taskState),
     author: v.string(),
   },
   handler: async (ctx, args) => {
@@ -712,6 +721,14 @@ export const upsertFromAssistant = mutation({
       }
       if (args.closureNotificationStatus !== undefined) {
         patch.closureNotificationStatus = args.closureNotificationStatus;
+      }
+      if (args.cmWorkingListStatus !== undefined) {
+        patch.cmWorkingListStatus = args.cmWorkingListStatus;
+      } else if (
+        args.status === "CM Working List" &&
+        (existing.cmWorkingListStatus ?? "Not Started") === "Not Started"
+      ) {
+        patch.cmWorkingListStatus = "In Progress";
       }
       if (disposition) {
         patch.disposition = disposition;
@@ -805,7 +822,9 @@ export const upsertFromAssistant = mutation({
           : status === "NCDOC/xClass"
             ? "In Progress"
             : "Not Started"),
-      cmWorkingListStatus: "Not Started",
+      cmWorkingListStatus:
+        args.cmWorkingListStatus ??
+        (status === "CM Working List" ? "In Progress" : "Not Started"),
       waiverOption: null,
       designAuthority: "",
       disposition,
@@ -1049,7 +1068,10 @@ export const updateApprovalStatus = mutation({
         args.evidenceLocation === undefined
           ? approval.evidenceLocation
           : cleanText(args.evidenceLocation, ""),
-      sentAt: args.status === "Sent" && approval.sentAt === null ? now : approval.sentAt,
+      sentAt:
+        args.status === "Sent" && approval.sentAt === null
+          ? now
+          : approval.sentAt,
       approvedAt: args.status === "Approved" ? now : approval.approvedAt,
     });
     await ctx.db.patch(approval.crId, { lastUpdatedAt: now });
@@ -1136,7 +1158,8 @@ export const assistantContext = query({
         xclassStatus: cr.xclassStatus ?? "Not Started",
         oocApprovalStatus: cr.oocApprovalStatus ?? "Not Started",
         chairApprovalStatus: cr.chairApprovalStatus ?? "Not Started",
-        closureNotificationStatus: cr.closureNotificationStatus ?? "Not Started",
+        closureNotificationStatus:
+          cr.closureNotificationStatus ?? "Not Started",
         cmWorkingListStatus: cr.cmWorkingListStatus ?? "Not Started",
         waiverOption: cr.waiverOption ?? null,
         designAuthority: cr.designAuthority ?? "",
@@ -1264,7 +1287,8 @@ export const assistantCrDetails = query({
         xclassStatus: cr.xclassStatus ?? "Not Started",
         oocApprovalStatus: cr.oocApprovalStatus ?? "Not Started",
         chairApprovalStatus: cr.chairApprovalStatus ?? "Not Started",
-        closureNotificationStatus: cr.closureNotificationStatus ?? "Not Started",
+        closureNotificationStatus:
+          cr.closureNotificationStatus ?? "Not Started",
         cmWorkingListStatus: cr.cmWorkingListStatus ?? "Not Started",
         waiverOption: cr.waiverOption ?? null,
         designAuthority: cr.designAuthority ?? "",
@@ -1343,7 +1367,7 @@ function cleanTags(tags: string[]) {
       tags
         .map((tag) => tag.trim())
         .filter((tag) => tag.length > 0)
-      .slice(0, 12),
+        .slice(0, 12),
     ),
   );
 }
@@ -1360,6 +1384,7 @@ function assistantWorkflowTags(
   return [
     eccScope ?? "",
     status === "Closed" || status === "NCDOC/xClass" ? "Closure Prep" : "",
+    status === "CM Working List" ? "CM Working List" : "",
     previousWork?.toLowerCase().includes("ooc") ? "OOC" : "",
     "Collins AI",
   ];
@@ -1423,6 +1448,9 @@ function buildAssistantTitle(
   if (status === "NCDOC/xClass") {
     return `${crNumber} - ${scope}NCDOC/xClass`;
   }
+  if (status === "CM Working List") {
+    return `${crNumber} - ${scope}CM Working List`;
+  }
   return `${crNumber} - ${scope}workflow update`;
 }
 
@@ -1441,6 +1469,9 @@ function buildAssistantDisposition(
   }
   if (status === "Pending OOC Approvals") {
     return `Pending OOC approvals${scope}`;
+  }
+  if (status === "CM Working List") {
+    return `In CM Working List readiness${scope}; waiting for CM queue confirmation`;
   }
   return "Created from Collins AI paste";
 }

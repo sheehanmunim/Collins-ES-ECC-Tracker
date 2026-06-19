@@ -1,5 +1,21 @@
 {
   "defaultProfile": "balanced",
+  "mirrorBaseUrl": "https://pub-94d1b8aec98a4b2fa8dce25bdd5ab332.r2.dev/ecc",
+  "artifacts": {
+    "qwen3.5:4b": {
+      "fileName": "qwen3.5-4b.gguf",
+      "modelfile": [
+        "TEMPLATE {{ .Prompt }}",
+        "RENDERER qwen3.5",
+        "PARSER qwen3.5",
+        "PARAMETER presence_penalty 1.5",
+        "PARAMETER temperature 1",
+        "PARAMETER top_k 20",
+        "PARAMETER top_p 0.95"
+      ],
+      "sha256": "81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490"
+    }
+  },
   "profiles": {
     "fast": {
       "chat": "gemma3:4b",
@@ -19,44 +35,156 @@
   },
   "weights": {
     "fast": {
-      "chat": { "quality": 0.35, "speed": 0.65 },
-      "voice": { "quality": 0.25, "speed": 0.75 },
-      "vision": { "quality": 0.45, "speed": 0.55 }
+      "chat": {
+        "quality": 0.35,
+        "speed": 0.65
+      },
+      "voice": {
+        "quality": 0.25,
+        "speed": 0.75
+      },
+      "vision": {
+        "quality": 0.45,
+        "speed": 0.55
+      }
     },
     "balanced": {
-      "chat": { "quality": 0.65, "speed": 0.35 },
-      "voice": { "quality": 0.35, "speed": 0.65 },
-      "vision": { "quality": 0.65, "speed": 0.35 }
+      "chat": {
+        "quality": 0.65,
+        "speed": 0.35
+      },
+      "voice": {
+        "quality": 0.35,
+        "speed": 0.65
+      },
+      "vision": {
+        "quality": 0.65,
+        "speed": 0.35
+      }
     },
     "quality": {
-      "chat": { "quality": 0.8, "speed": 0.2 },
-      "voice": { "quality": 0.45, "speed": 0.55 },
-      "vision": { "quality": 0.8, "speed": 0.2 }
+      "chat": {
+        "quality": 0.8,
+        "speed": 0.2
+      },
+      "voice": {
+        "quality": 0.45,
+        "speed": 0.55
+      },
+      "vision": {
+        "quality": 0.8,
+        "speed": 0.2
+      }
     }
   },
   "candidates": {
     "chat": [
-      { "name": "qwen3.5:4b", "minRamGb": 8, "quality": 9.2, "speed": 7.2 },
-      { "name": "qwen3:latest", "minRamGb": 10, "quality": 8.6, "speed": 5.6 },
-      { "name": "qwen3:4b", "minRamGb": 8, "quality": 8.4, "speed": 6.8 },
-      { "name": "gemma3:4b", "minRamGb": 8, "quality": 7.4, "speed": 8.2 },
-      { "name": "qwen2.5:7b", "minRamGb": 12, "quality": 8.0, "speed": 5.4 },
-      { "name": "qwen2.5:3b-instruct", "minRamGb": 6, "quality": 6.5, "speed": 8.0 },
-      { "name": "granite3.2:2b", "minRamGb": 6, "quality": 5.8, "speed": 9.0 }
+      {
+        "name": "qwen3.5:4b",
+        "minRamGb": 8,
+        "quality": 9.2,
+        "speed": 7.2
+      },
+      {
+        "name": "qwen3:latest",
+        "minRamGb": 10,
+        "quality": 8.6,
+        "speed": 5.6
+      },
+      {
+        "name": "qwen3:4b",
+        "minRamGb": 8,
+        "quality": 8.4,
+        "speed": 6.8
+      },
+      {
+        "name": "gemma3:4b",
+        "minRamGb": 8,
+        "quality": 7.4,
+        "speed": 8.2
+      },
+      {
+        "name": "qwen2.5:7b",
+        "minRamGb": 12,
+        "quality": 8,
+        "speed": 5.4
+      },
+      {
+        "name": "qwen2.5:3b-instruct",
+        "minRamGb": 6,
+        "quality": 6.5,
+        "speed": 8
+      },
+      {
+        "name": "granite3.2:2b",
+        "minRamGb": 6,
+        "quality": 5.8,
+        "speed": 9
+      }
     ],
     "voice": [
-      { "name": "gemma3:4b", "minRamGb": 8, "quality": 7.5, "speed": 8.5 },
-      { "name": "qwen3.5:4b", "minRamGb": 8, "quality": 8.8, "speed": 7.0 },
-      { "name": "qwen3:4b", "minRamGb": 8, "quality": 8.0, "speed": 6.6 },
-      { "name": "qwen3:latest", "minRamGb": 10, "quality": 8.2, "speed": 5.4 },
-      { "name": "qwen2.5:3b-instruct", "minRamGb": 6, "quality": 6.4, "speed": 8.1 },
-      { "name": "granite3.2:2b", "minRamGb": 6, "quality": 5.6, "speed": 9.0 }
+      {
+        "name": "gemma3:4b",
+        "minRamGb": 8,
+        "quality": 7.5,
+        "speed": 8.5
+      },
+      {
+        "name": "qwen3.5:4b",
+        "minRamGb": 8,
+        "quality": 8.8,
+        "speed": 7
+      },
+      {
+        "name": "qwen3:4b",
+        "minRamGb": 8,
+        "quality": 8,
+        "speed": 6.6
+      },
+      {
+        "name": "qwen3:latest",
+        "minRamGb": 10,
+        "quality": 8.2,
+        "speed": 5.4
+      },
+      {
+        "name": "qwen2.5:3b-instruct",
+        "minRamGb": 6,
+        "quality": 6.4,
+        "speed": 8.1
+      },
+      {
+        "name": "granite3.2:2b",
+        "minRamGb": 6,
+        "quality": 5.6,
+        "speed": 9
+      }
     ],
     "vision": [
-      { "name": "granite3.2-vision:2b", "minRamGb": 6, "quality": 8.8, "speed": 8.0 },
-      { "name": "gemma3:4b", "minRamGb": 8, "quality": 7.8, "speed": 7.6 },
-      { "name": "qwen2.5vl:3b", "minRamGb": 8, "quality": 8.0, "speed": 6.4 },
-      { "name": "llava-phi3:3.8b", "minRamGb": 8, "quality": 6.8, "speed": 6.2 }
+      {
+        "name": "granite3.2-vision:2b",
+        "minRamGb": 6,
+        "quality": 8.8,
+        "speed": 8
+      },
+      {
+        "name": "gemma3:4b",
+        "minRamGb": 8,
+        "quality": 7.8,
+        "speed": 7.6
+      },
+      {
+        "name": "qwen2.5vl:3b",
+        "minRamGb": 8,
+        "quality": 8,
+        "speed": 6.4
+      },
+      {
+        "name": "llava-phi3:3.8b",
+        "minRamGb": 8,
+        "quality": 6.8,
+        "speed": 6.2
+      }
     ]
   },
   "installedBonus": {

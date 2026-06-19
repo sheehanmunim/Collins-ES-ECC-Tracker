@@ -569,6 +569,13 @@ const msEccNcdocRequirements = [
   "Waiver approvals PDF",
   "MS ECC Checklist PDF",
 ];
+const cmWorkingListRequirements = [
+  "CO completion date and program risk",
+  "Priority code from tracker breakdown",
+  "Supporting documents uploaded in PLM/NCDOC",
+  "CR submitted to workflow; note CS/CM queue",
+  "Tracker rows copied into Friday CM email",
+];
 
 const statusTone: Record<CrStatus, string> = {
   Intake: "border-gray-200 bg-gray-50 text-gray-700",
@@ -765,6 +772,7 @@ const workflowPhaseDefinitions: Array<{
       {
         label: "CM List",
         field: "cmWorkingListStatus",
+        requirements: cmWorkingListRequirements,
       },
     ],
   },
@@ -1205,7 +1213,10 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
                           />
                         </>
                       ) : activeSection === "analytics" ? (
-                        <AnalyticsHome crs={crs ?? []} localOwner={localOwner} />
+                        <AnalyticsHome
+                          crs={crs ?? []}
+                          localOwner={localOwner}
+                        />
                       ) : (
                         <RequestWorkspace
                           crs={filteredCrs}
@@ -1241,7 +1252,6 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
                     </div>
                   </div>
                 </div>
-
               </>
             )}
             {assistantView !== "closed" ? (
@@ -2808,7 +2818,10 @@ function TrackerSidebar({
     section: SidebarNavSection,
   ) {
     const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+    if (
+      nextTarget instanceof Node &&
+      event.currentTarget.contains(nextTarget)
+    ) {
       return;
     }
 
@@ -2919,9 +2932,7 @@ function TrackerSidebar({
                 key={item.label}
                 data-sidebar-nav-item
                 onDragOver={(event) => handleNavDragOver(event, item.section)}
-                onDragLeave={(event) =>
-                  handleNavDragLeave(event, item.section)
-                }
+                onDragLeave={(event) => handleNavDragLeave(event, item.section)}
                 onDrop={(event) => handleNavDrop(event, item.section)}
                 className={cn(
                   "group relative flex w-full items-center justify-between gap-2 border-l-2 text-sm transition",
@@ -2929,7 +2940,8 @@ function TrackerSidebar({
                     ? "border-gray-950 bg-gray-100 text-gray-950"
                     : "border-transparent text-gray-600 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-950",
                   dragging && "opacity-50",
-                  dropTarget && "bg-gray-100 text-gray-950 ring-1 ring-inset ring-gray-300",
+                  dropTarget &&
+                    "bg-gray-100 text-gray-950 ring-1 ring-inset ring-gray-300",
                 )}
               >
                 {dropTarget ? (
@@ -2962,9 +2974,7 @@ function TrackerSidebar({
                 key={item.label}
                 type="button"
                 onDragOver={(event) => handleNavDragOver(event, item.section)}
-                onDragLeave={(event) =>
-                  handleNavDragLeave(event, item.section)
-                }
+                onDragLeave={(event) => handleNavDragLeave(event, item.section)}
                 onDrop={(event) => handleNavDrop(event, item.section)}
                 onClick={() => onSectionChange(item.section)}
                 className={cn(
@@ -2973,7 +2983,8 @@ function TrackerSidebar({
                     ? "border-gray-950 bg-gray-100 text-gray-950"
                     : "border-transparent text-gray-500 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-950",
                   dragging && "opacity-50",
-                  dropTarget && "bg-gray-100 text-gray-950 ring-1 ring-inset ring-gray-300",
+                  dropTarget &&
+                    "bg-gray-100 text-gray-950 ring-1 ring-inset ring-gray-300",
                 )}
                 title={item.label}
               >
@@ -3021,9 +3032,7 @@ function TrackerSidebar({
           onClick={() => onSectionChange("settings")}
           className={cn(
             "flex w-full min-w-0 items-center border-l-2 border-transparent text-left transition hover:border-gray-300 hover:bg-gray-100",
-            isOpen
-              ? "gap-2.5 px-2.5 py-1.5"
-              : "h-10 justify-center px-0 py-0",
+            isOpen ? "gap-2.5 px-2.5 py-1.5" : "h-10 justify-center px-0 py-0",
             activeSection === "settings" && "border-gray-950 bg-gray-100",
           )}
           aria-label="Open settings"
@@ -3211,9 +3220,7 @@ function FilterBar({
                 : "border-transparent bg-slate-100 text-slate-500",
             )}
           >
-            {hasActiveFilters
-              ? `${activeFilterCount} active`
-              : "All requests"}
+            {hasActiveFilters ? `${activeFilterCount} active` : "All requests"}
           </span>
           <Button
             type="button"
@@ -3315,11 +3322,7 @@ function FilterSelect({
   return (
     <label className="block min-w-0">
       <span
-        className={cn(
-          "mb-1.5 block",
-          sectionLabel,
-          active && "text-slate-700",
-        )}
+        className={cn("mb-1.5 block", sectionLabel, active && "text-slate-700")}
       >
         {label}
       </span>
@@ -4179,8 +4182,9 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
     isFullscreen: isWorkflowFullscreen,
     toggleFullscreen: toggleWorkflowFullscreen,
   } = useFullscreenTarget(workflowPanelRef);
-  const [savingTaskField, setSavingTaskField] =
-    useState<TaskStateField | null>(null);
+  const [savingTaskField, setSavingTaskField] = useState<TaskStateField | null>(
+    null,
+  );
   const [taskError, setTaskError] = useState("");
   const [workflowZoom, setWorkflowZoom] = useState(1);
   const [fitZoom, setFitZoom] = useState(1);
@@ -4198,9 +4202,10 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
   const [workflowPhasePositions, setWorkflowPhasePositions] = useState<
     Partial<Record<string, WhiteboardPosition>>
   >(() => (cr ? readWorkflowPhasePositions(cr._id) : {}));
-  const workflowPhases = useMemo(() => (cr ? buildWorkflowPhases(cr) : []), [
-    cr,
-  ]);
+  const workflowPhases = useMemo(
+    () => (cr ? buildWorkflowPhases(cr) : []),
+    [cr],
+  );
   const positionedWorkflowPhases = useMemo(
     () =>
       workflowPhases.map((phase, index) => ({
@@ -4374,12 +4379,7 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
         window.cancelAnimationFrame(secondFrame);
       }
     };
-  }, [
-    currentWorkflowFocusKey,
-    fitMode,
-    workflowFocusRequest,
-    workflowZoom,
-  ]);
+  }, [currentWorkflowFocusKey, fitMode, workflowFocusRequest, workflowZoom]);
 
   async function handleTaskStateChange(task: WorkflowTask, state: TaskState) {
     if (!cr || task.state === state || savingTaskField) {
@@ -4870,12 +4870,7 @@ function WorkflowPhaseCard({
             String(position).padStart(2, "0")
           )}
         </span>
-        <span
-          className={cn(
-            "h-4 w-px",
-            workflowPhaseStemTone[phase.state],
-          )}
-        />
+        <span className={cn("h-4 w-px", workflowPhaseStemTone[phase.state])} />
       </div>
       <div
         className={cn(
@@ -5435,7 +5430,8 @@ function CrWhiteboard({
                   className={cn(
                     "absolute left-0 top-0 z-10 w-[232px] touch-none select-none border p-3 text-left shadow-sm outline-none transition-shadow duration-150 hover:shadow-md focus-visible:ring-2 focus-visible:ring-gray-950",
                     stickyNoteTone[cr.priority],
-                    selectedId === cr._id && "shadow-lg ring-2 ring-gray-950/30",
+                    selectedId === cr._id &&
+                      "shadow-lg ring-2 ring-gray-950/30",
                   )}
                   style={{
                     transform: `translate(${position.x}px, ${position.y}px)`,
@@ -5840,7 +5836,10 @@ function CrReadOnlyDetails({ cr }: { cr: Cr }) {
               label="Classification"
               value={cr.classification ?? "TBD"}
             />
-            <DetailField label="Current Gate" value={cr.currentGate ?? "None"} />
+            <DetailField
+              label="Current Gate"
+              value={cr.currentGate ?? "None"}
+            />
             <DetailField
               label="Class/Gate/Military Supplier EC"
               value={cr.classGateMilitarySupplierEc ?? "Not set"}
@@ -6017,7 +6016,10 @@ function DetailTags({ tags }: { tags: string[] }) {
   );
 }
 
-function displayDetailValue(value: string | null | undefined, fallback: string) {
+function displayDetailValue(
+  value: string | null | undefined,
+  fallback: string,
+) {
   const trimmed = value?.trim();
   return trimmed || fallback;
 }
@@ -6044,8 +6046,9 @@ function WorkflowSummary({ cr }: { cr: Cr }) {
   const resolvedCount = milestones.filter(
     ([, state]) => state === "Complete" || state === "Not Applicable",
   ).length;
-  const blockedCount = milestones.filter(([, state]) => state === "Blocked")
-    .length;
+  const blockedCount = milestones.filter(
+    ([, state]) => state === "Blocked",
+  ).length;
 
   return (
     <DetailSection title="ECC Workflow">
@@ -6195,7 +6198,9 @@ function getWorkflowDefinitionTasks(
       : [];
   }
 
-  return definition.tasks.filter((task) => task.field !== "cmWorkingListStatus");
+  return definition.tasks.filter(
+    (task) => task.field !== "cmWorkingListStatus",
+  );
 }
 
 function isMilitarySupplierEccCr(cr: Cr) {
@@ -7296,11 +7301,7 @@ function AssistantPanel({
     outputGain.connect(audioContext.destination);
     localVoiceSessionRef.current = session;
     setVoiceInputMode(mode);
-    setVoiceStatus(
-      mode === "voice"
-        ? "Listening..."
-        : "Dictating...",
-    );
+    setVoiceStatus(mode === "voice" ? "Listening..." : "Dictating...");
   }
 
   function handleLocalVoiceFrame(
@@ -7344,9 +7345,7 @@ function AssistantPanel({
     );
     const isVoice =
       rms >=
-      (session.speechStartedAt !== null
-        ? continueThreshold
-        : startThreshold);
+      (session.speechStartedAt !== null ? continueThreshold : startThreshold);
 
     session.preRollFrames.push(frame);
     trimAudioFrames(
@@ -7382,11 +7381,11 @@ function AssistantPanel({
       );
     }
 
-    const speechDuration = session.speechStartedAt
-      !== null
-      ? now - session.speechStartedAt
+    const speechDuration =
+      session.speechStartedAt !== null ? now - session.speechStartedAt : 0;
+    const silenceDuration = session.lastSpeechAt
+      ? now - session.lastSpeechAt
       : 0;
-    const silenceDuration = session.lastSpeechAt ? now - session.lastSpeechAt : 0;
     const fallbackMs = session.mode === "voice" ? 4_800 : 7_500;
     const possibleSpeechThreshold = Math.max(0.002, session.noiseFloor * 1.25);
     const shouldFallbackFinalize =
@@ -7670,7 +7669,8 @@ function AssistantPanel({
                 onClick={() => setHistoryOpen((current) => !current)}
                 className={cn(
                   "flex h-9 w-9 items-center justify-center border border-gray-200 bg-white text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950",
-                  historyOpen && "border-gray-950 bg-gray-950 text-white hover:bg-gray-900 hover:text-white",
+                  historyOpen &&
+                    "border-gray-950 bg-gray-950 text-white hover:bg-gray-900 hover:text-white",
                 )}
                 aria-label={
                   historyOpen ? "Hide chat history" : "Show chat history"
@@ -7709,9 +7709,7 @@ function AssistantPanel({
                     : "Expand Collins AI"
                 }
                 title={
-                  isFullView
-                    ? "Return to side panel"
-                    : "Open full chat view"
+                  isFullView ? "Return to side panel" : "Open full chat view"
                 }
               >
                 {isFullView ? (
@@ -7744,7 +7742,9 @@ function AssistantPanel({
           </div>
         </div>
       </header>
-      <div className={cn(isFullView ? "flex min-h-0 flex-1 bg-white" : "contents")}>
+      <div
+        className={cn(isFullView ? "flex min-h-0 flex-1 bg-white" : "contents")}
+      >
         {historyOpen ? (
           <AssistantHistoryPanel
             sessions={chatSessions}
@@ -7798,161 +7798,165 @@ function AssistantPanel({
             className="shrink-0 border-t border-slate-200 bg-white px-4 py-4"
           >
             <div className="mx-auto w-full max-w-3xl">
-          {voiceStatus ? (
-            <p className="mb-2 text-xs font-medium text-slate-500">
-              {voiceStatus}
-            </p>
-          ) : null}
-          {attachment ? (
-            <div className="mb-2 flex items-center gap-2 border border-slate-200 bg-slate-50 p-2">
-              <Image
-                src={attachment.dataUrl}
-                alt=""
-                width={48}
-                height={32}
-                unoptimized
-                className="h-8 w-12 border border-slate-200 bg-white object-contain"
+              {voiceStatus ? (
+                <p className="mb-2 text-xs font-medium text-slate-500">
+                  {voiceStatus}
+                </p>
+              ) : null}
+              {attachment ? (
+                <div className="mb-2 flex items-center gap-2 border border-slate-200 bg-slate-50 p-2">
+                  <Image
+                    src={attachment.dataUrl}
+                    alt=""
+                    width={48}
+                    height={32}
+                    unoptimized
+                    className="h-8 w-12 border border-slate-200 bg-white object-contain"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-600">
+                    {attachment.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachment(null)}
+                    className="border border-slate-200 bg-white p-1.5 text-slate-500 transition hover:border-gray-300 hover:text-gray-950"
+                    title="Remove screenshot"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : null}
+              {attachmentError ? (
+                <p className="mb-2 text-xs font-medium text-rose-700">
+                  {attachmentError}
+                </p>
+              ) : null}
+              <input
+                ref={assistantFileInputRef}
+                type="file"
+                accept="image/*"
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void handleAssistantImageFile(file);
+                  }
+                  event.target.value = "";
+                }}
               />
-              <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-600">
-                {attachment.name}
-              </span>
-              <button
-                type="button"
-                onClick={() => setAttachment(null)}
-                className="border border-slate-200 bg-white p-1.5 text-slate-500 transition hover:border-gray-300 hover:text-gray-950"
-                title="Remove screenshot"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ) : null}
-          {attachmentError ? (
-            <p className="mb-2 text-xs font-medium text-rose-700">
-              {attachmentError}
-            </p>
-          ) : null}
-          <input
-            ref={assistantFileInputRef}
-            type="file"
-            accept="image/*"
-            className="sr-only"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void handleAssistantImageFile(file);
-              }
-              event.target.value = "";
-            }}
-          />
-          <div className="border border-slate-200 bg-white p-2 shadow-lg shadow-slate-950/5">
-            <textarea
-              ref={assistantTextAreaRef}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={handleComposerKeyDown}
-              placeholder="Ask Collins AI..."
-              rows={1}
-              className="min-h-10 w-full resize-none border-0 bg-transparent px-2 py-2 text-base leading-5 placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => assistantFileInputRef.current?.click()}
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center border border-slate-200 bg-white text-slate-600 transition hover:border-gray-300 hover:text-gray-950"
-                aria-label="Add attachment"
-                title="Add attachment"
-              >
-                <Paperclip className="h-4 w-4" />
-              </button>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleDictationToggle}
-                  disabled={
-                    !voiceSupported || asking || (!isDictating && isVoiceActive)
-                  }
-                  className={cn(
-                    "inline-flex h-9 w-9 shrink-0 items-center justify-center border transition disabled:cursor-not-allowed disabled:opacity-50",
-                    isDictating
-                      ? "border-gray-950 bg-gray-950 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:border-gray-300 hover:text-gray-950",
-                  )}
-                  title={
-                    voiceSupported
-                      ? isDictating
-                        ? "Stop dictation"
-                        : "Dictate"
-                      : "Voice input is not available in this browser"
-                  }
-                  aria-label={isDictating ? "Stop dictation" : "Dictate"}
-                >
-                  <Mic className="h-4 w-4" />
-                </button>
-                <Button
-                  type={
-                    canSendMessage && !isSpeechInputActive ? "submit" : "button"
-                  }
-                  size="icon"
-                  onClick={
-                    canSendMessage && !isSpeechInputActive
-                      ? undefined
-                      : handleVoiceChatToggle
-                  }
-                  disabled={
-                    isDictating
-                      ? true
-                      : isVoiceActive
-                        ? false
-                        : canSendMessage
-                          ? asking
-                          : !voiceSupported || asking
-                  }
-                  title={
-                    isDictating
-                      ? "Finish dictation with the microphone button"
-                      : canSendMessage && !isSpeechInputActive
-                        ? "Send message"
-                        : voiceSupported
-                          ? isVoiceSpeaking
-                          ? "Interrupt and listen"
-                          : isVoiceActive
-                            ? "End voice mode"
-                            : "Voice mode"
-                        : "Voice input is not available in this browser"
-                  }
-                  aria-label={
-                    isDictating
-                      ? "Finish dictation with the microphone button"
-                      : canSendMessage && !isSpeechInputActive
-                        ? "Send message"
-                        : isVoiceSpeaking
-                        ? "Interrupt and listen"
-                        : isVoiceActive
-                          ? "End voice mode"
-                          : "Voice mode"
-                  }
-                  className={cn(
-                    "shrink-0 border border-gray-950 bg-gray-950 text-white hover:bg-gray-800",
-                    isVoiceActive && "ring-2 ring-gray-300",
-                  )}
-                >
-                  {asking && !isVoiceActive ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : canSendMessage && !isSpeechInputActive ? (
-                    <ArrowUp className="h-4 w-4" />
-                  ) : (
-                    <AudioLines
+              <div className="border border-slate-200 bg-white p-2 shadow-lg shadow-slate-950/5">
+                <textarea
+                  ref={assistantTextAreaRef}
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={handleComposerKeyDown}
+                  placeholder="Ask Collins AI..."
+                  rows={1}
+                  className="min-h-10 w-full resize-none border-0 bg-transparent px-2 py-2 text-base leading-5 placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => assistantFileInputRef.current?.click()}
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center border border-slate-200 bg-white text-slate-600 transition hover:border-gray-300 hover:text-gray-950"
+                    aria-label="Add attachment"
+                    title="Add attachment"
+                  >
+                    <Paperclip className="h-4 w-4" />
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDictationToggle}
+                      disabled={
+                        !voiceSupported ||
+                        asking ||
+                        (!isDictating && isVoiceActive)
+                      }
                       className={cn(
-                        "h-4 w-4",
-                        (isVoiceListening || isVoiceSpeaking) &&
-                          "animate-pulse",
+                        "inline-flex h-9 w-9 shrink-0 items-center justify-center border transition disabled:cursor-not-allowed disabled:opacity-50",
+                        isDictating
+                          ? "border-gray-950 bg-gray-950 text-white"
+                          : "border-slate-200 bg-white text-slate-600 hover:border-gray-300 hover:text-gray-950",
                       )}
-                    />
-                  )}
-                </Button>
+                      title={
+                        voiceSupported
+                          ? isDictating
+                            ? "Stop dictation"
+                            : "Dictate"
+                          : "Voice input is not available in this browser"
+                      }
+                      aria-label={isDictating ? "Stop dictation" : "Dictate"}
+                    >
+                      <Mic className="h-4 w-4" />
+                    </button>
+                    <Button
+                      type={
+                        canSendMessage && !isSpeechInputActive
+                          ? "submit"
+                          : "button"
+                      }
+                      size="icon"
+                      onClick={
+                        canSendMessage && !isSpeechInputActive
+                          ? undefined
+                          : handleVoiceChatToggle
+                      }
+                      disabled={
+                        isDictating
+                          ? true
+                          : isVoiceActive
+                            ? false
+                            : canSendMessage
+                              ? asking
+                              : !voiceSupported || asking
+                      }
+                      title={
+                        isDictating
+                          ? "Finish dictation with the microphone button"
+                          : canSendMessage && !isSpeechInputActive
+                            ? "Send message"
+                            : voiceSupported
+                              ? isVoiceSpeaking
+                                ? "Interrupt and listen"
+                                : isVoiceActive
+                                  ? "End voice mode"
+                                  : "Voice mode"
+                              : "Voice input is not available in this browser"
+                      }
+                      aria-label={
+                        isDictating
+                          ? "Finish dictation with the microphone button"
+                          : canSendMessage && !isSpeechInputActive
+                            ? "Send message"
+                            : isVoiceSpeaking
+                              ? "Interrupt and listen"
+                              : isVoiceActive
+                                ? "End voice mode"
+                                : "Voice mode"
+                      }
+                      className={cn(
+                        "shrink-0 border border-gray-950 bg-gray-950 text-white hover:bg-gray-800",
+                        isVoiceActive && "ring-2 ring-gray-300",
+                      )}
+                    >
+                      {asking && !isVoiceActive ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : canSendMessage && !isSpeechInputActive ? (
+                        <ArrowUp className="h-4 w-4" />
+                      ) : (
+                        <AudioLines
+                          className={cn(
+                            "h-4 w-4",
+                            (isVoiceListening || isVoiceSpeaking) &&
+                              "animate-pulse",
+                          )}
+                        />
+                      )}
+                    </Button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
             </div>
           </form>
         </div>
@@ -8990,8 +8994,14 @@ function scrollWorkflowToPhase(
 ) {
   const viewportRect = viewport.getBoundingClientRect();
   const cardRect = phaseCard.getBoundingClientRect();
-  const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
-  const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+  const maxScrollLeft = Math.max(
+    0,
+    viewport.scrollWidth - viewport.clientWidth,
+  );
+  const maxScrollTop = Math.max(
+    0,
+    viewport.scrollHeight - viewport.clientHeight,
+  );
   const targetLeft =
     viewport.scrollLeft +
     cardRect.left -
@@ -9007,20 +9017,16 @@ function scrollWorkflowToPhase(
     );
 
   viewport.scrollTo({
-    left: Math.min(
-      maxScrollLeft,
-      Math.max(0, targetLeft),
-    ),
-    top: Math.min(
-      maxScrollTop,
-      Math.max(0, targetTop),
-    ),
+    left: Math.min(maxScrollLeft, Math.max(0, targetLeft)),
+    top: Math.min(maxScrollTop, Math.max(0, targetTop)),
   });
 }
 
 function defaultWorkflowPhasePosition(index: number): WhiteboardPosition {
   return {
-    x: workflowCanvasPadding + index * (workflowPhaseCardWidth + workflowPhaseGap),
+    x:
+      workflowCanvasPadding +
+      index * (workflowPhaseCardWidth + workflowPhaseGap),
     y: workflowCanvasPadding,
   };
 }
@@ -9120,7 +9126,10 @@ function saveWorkflowPhasePositions(
     const parsed = rawValue ? (JSON.parse(rawValue) as unknown) : {};
     const positionsByCr =
       parsed && typeof parsed === "object"
-        ? (parsed as Record<string, Partial<Record<string, WhiteboardPosition>>>)
+        ? (parsed as Record<
+            string,
+            Partial<Record<string, WhiteboardPosition>>
+          >)
         : {};
     positionsByCr[crId] = positions;
     window.localStorage.setItem(
@@ -9193,7 +9202,9 @@ function readAssistantChatSessions() {
   }
 
   try {
-    const rawValue = window.localStorage.getItem(assistantChatHistoryStorageKey);
+    const rawValue = window.localStorage.getItem(
+      assistantChatHistoryStorageKey,
+    );
     if (!rawValue) {
       return [];
     }
@@ -9226,9 +9237,7 @@ function normalizeAssistantChatSessions(value: unknown) {
 
   return value
     .map((session) => normalizeAssistantChatSession(session))
-    .filter(
-      (session): session is AssistantChatSession => session !== null,
-    )
+    .filter((session): session is AssistantChatSession => session !== null)
     .sort((first, second) => second.updatedAt - first.updatedAt)
     .slice(0, assistantMaxStoredChats);
 }
@@ -9485,7 +9494,10 @@ function activePeopleToken(value: string) {
 function replaceActivePeopleToken(value: string, person: string) {
   const parts = value.split(",");
   parts[parts.length - 1] = person;
-  return parts.map((part) => part.trim()).filter(Boolean).join(", ");
+  return parts
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(", ");
 }
 
 function cleanPersonName(value: string | null | undefined) {
@@ -10994,7 +11006,8 @@ function subscribeToStaticStore() {
 
 function getVoiceSupportSnapshot() {
   return Boolean(
-    (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) ||
+    (typeof navigator !== "undefined" &&
+      navigator.mediaDevices?.getUserMedia) ||
       getSpeechRecognitionConstructor(),
   );
 }
@@ -11153,8 +11166,9 @@ async function speakWithLocalTts(text: string, speechRunId: number) {
   try {
     const chunks = splitSpokenText(text);
     let playedAnyChunk = false;
-    let nextBlobPromise: Promise<Blob | null> | null =
-      chunks[0] ? fetchLocalTtsBlob(chunks[0]) : null;
+    let nextBlobPromise: Promise<Blob | null> | null = chunks[0]
+      ? fetchLocalTtsBlob(chunks[0])
+      : null;
 
     for (let index = 0; index < chunks.length; index += 1) {
       if (speechRunId !== currentSpeechRunId) {

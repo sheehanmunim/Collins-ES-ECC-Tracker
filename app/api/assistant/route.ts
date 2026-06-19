@@ -120,7 +120,11 @@ type AssistantContextResponse = {
   crs?: AssistantContextRow[];
 };
 
-type WorkflowStatus = "Closed" | "NCDOC/xClass" | "Pending OOC Approvals";
+type WorkflowStatus =
+  | "Closed"
+  | "NCDOC/xClass"
+  | "Pending OOC Approvals"
+  | "CM Working List";
 
 type WorkflowTaskState = "Complete" | "In Progress";
 
@@ -134,6 +138,7 @@ type AssistantWorkflowCommand = {
   disposition?: string;
   oocApprovalStatus?: WorkflowTaskState;
   closureNotificationStatus?: WorkflowTaskState;
+  cmWorkingListStatus?: WorkflowTaskState;
   author: string;
 };
 
@@ -149,7 +154,9 @@ const DEFAULT_VISION_MODEL = localModelsConfig.profiles.balanced.vision;
 const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as AssistantRequest | null;
+  const body = (await request
+    .json()
+    .catch(() => null)) as AssistantRequest | null;
   const messages = normalizeMessages(body?.messages ?? []);
 
   if (messages.length === 0) {
@@ -197,14 +204,16 @@ export async function POST(request: Request) {
   const imageBase64 = cleanImageBase64(body?.image?.base64 ?? "");
   const isVoiceMode = body?.mode === "voice" && !imageBase64;
   const model = imageBase64
-    ? process.env.OLLAMA_VISION_MODEL ?? DEFAULT_VISION_MODEL
+    ? (process.env.OLLAMA_VISION_MODEL ?? DEFAULT_VISION_MODEL)
     : isVoiceMode
-      ? process.env.OLLAMA_VOICE_MODEL ??
+      ? (process.env.OLLAMA_VOICE_MODEL ??
         process.env.OLLAMA_MODEL ??
-        DEFAULT_VOICE_MODEL
-      : process.env.OLLAMA_MODEL ?? DEFAULT_MODEL;
+        DEFAULT_VOICE_MODEL)
+      : (process.env.OLLAMA_MODEL ?? DEFAULT_MODEL);
   const voiceModel =
-    process.env.OLLAMA_VOICE_MODEL ?? process.env.OLLAMA_MODEL ?? DEFAULT_VOICE_MODEL;
+    process.env.OLLAMA_VOICE_MODEL ??
+    process.env.OLLAMA_MODEL ??
+    DEFAULT_VOICE_MODEL;
   const visionModel = process.env.OLLAMA_VISION_MODEL ?? DEFAULT_VISION_MODEL;
   const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_URL;
   const requestedCrNumbers = findRequestedCrNumbers(messages, selectedCrNumber);
@@ -256,7 +265,11 @@ export async function POST(request: Request) {
   if (crDetailAnswer) {
     return NextResponse.json({ answer: crDetailAnswer });
   }
-  const ownerAnswer = buildOwnerQuestionAnswer(messages, contextRows, localOwner);
+  const ownerAnswer = buildOwnerQuestionAnswer(
+    messages,
+    contextRows,
+    localOwner,
+  );
   if (ownerAnswer) {
     return NextResponse.json({ answer: ownerAnswer });
   }
@@ -274,6 +287,7 @@ export async function POST(request: Request) {
       ? "The user is in live voice mode. Answer conversationally in 1 to 3 short sentences unless they ask for detail."
       : "",
     "If the user attaches a screenshot with CR intake notes, read the screenshot and extract the PWES Military ECC fields. Read digits exactly and double-check CR numbers, dates, and charge numbers. Map Presenter to ECC Coordinator, Timestamp or Timeslot to Meeting Date and Time, Provide Collins CR to Collins CR # / PW REA #, CR Title/Description to Description, Engine Programs affected to Engine Program(s), Review being requested and CR Classification to Class/Gate/Military Supplier EC, Component Model name to Component Model(s), and Open Charge Number to Charge Number.",
+    "For CM Working List questions, use the EC-35200 process knowledge and treat CM Working List as CM readiness work, not final CR closure.",
     "Do not reveal chain-of-thought or use think tags.",
     selectedCrNumber
       ? `The user currently has ${selectedCrNumber} selected in the UI.`
@@ -324,10 +338,7 @@ export async function POST(request: Request) {
       model,
       stream: false,
       think: false,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...chatMessages,
-      ],
+      messages: [{ role: "system", content: systemPrompt }, ...chatMessages],
       options: {
         temperature: isVoiceMode ? 0.35 : 0.25,
         num_predict: isVoiceMode ? 220 : 520,
@@ -354,10 +365,7 @@ export async function POST(request: Request) {
       answer = await retryWithConversationalModel({
         ollamaBaseUrl,
         model: voiceModel,
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...chatMessages,
-        ],
+        messages: [{ role: "system", content: systemPrompt }, ...chatMessages],
         isVoiceMode,
         needsCrContext,
       });
@@ -436,7 +444,11 @@ function shouldUseCrContext(
     return true;
   }
 
-  if (/^(what|why|how|wdym|explain|more|tell me more|ok|okay)\??$/i.test(latestText.trim())) {
+  if (
+    /^(what|why|how|wdym|explain|more|tell me more|ok|okay)\??$/i.test(
+      latestText.trim(),
+    )
+  ) {
     return messages
       .slice(-5)
       .some((message) => mentionsCrWork(message.content.toLowerCase()));
@@ -446,7 +458,7 @@ function shouldUseCrContext(
 }
 
 function mentionsCrWork(value: string) {
-  return /\b(crs?|change requests?|ecc|review|blockers?|blocked|high-risk|risk|owner|assigned|due|target date|approval|approvals|actions?|ooc|ncdoc|xclass|closure|meeting|intake|documentation|quorum|evidence|workflow|waiver|gate|supplier|program|ipt)\b/.test(
+  return /\b(crs?|change requests?|ecc|review|blockers?|blocked|high-risk|risk|owner|assigned|due|target date|approval|approvals|actions?|ooc|ncdoc|xclass|closure|meeting|intake|documentation|quorum|evidence|workflow|waiver|gate|supplier|program|ipt|cm|configuration management|working list|plm|epec|change order|priority code|wlox|cs queue|cm queue)\b/.test(
     value,
   );
 }
@@ -588,7 +600,9 @@ function buildCrDetailQuestionAnswer(
     (crNumber) => !rowsByCrNumber.has(crNumber),
   );
   const explicitlyMissing = Array.from(
-    new Set([...missing, ...missingCrNumbers.map(normalizeCrNumber)].filter(Boolean)),
+    new Set(
+      [...missing, ...missingCrNumbers.map(normalizeCrNumber)].filter(Boolean),
+    ),
   );
 
   if (foundRows.length === 0) {
@@ -613,7 +627,7 @@ function isCrDetailQuestion(value: string) {
   }
 
   return (
-    /\b(tell|about|detail|details|status|summary|summarize|what|show|info|risk|owner|due|date|priority|block|action|approval|where|who|when|describe|explain)\b/.test(
+    /\b(tell|about|detail|details|status|summary|summarize|what|show|info|risk|owner|due|date|priority|block|action|approval|cm|working list|plm|where|who|when|describe|explain)\b/.test(
       text,
     ) || /^cr[-\s_]*\d{1,7}$/i.test(value.trim())
   );
@@ -654,7 +668,10 @@ function formatCrDetailSummary(cr: AssistantContextRow) {
     cr.oocApprovalStatus ? `OOC ${cr.oocApprovalStatus}` : "",
     cr.ncdocStatus ? `NCDOC ${cr.ncdocStatus}` : "",
     cr.xclassStatus ? `xClass ${cr.xclassStatus}` : "",
-    cr.closureNotificationStatus ? `closure ${cr.closureNotificationStatus}` : "",
+    cr.cmWorkingListStatus ? `CM list ${cr.cmWorkingListStatus}` : "",
+    cr.closureNotificationStatus
+      ? `closure ${cr.closureNotificationStatus}`
+      : "",
   ].filter(Boolean);
   const openActions = (cr.openActions ?? []).slice(0, 3);
   const latestUpdate = cr.latestUpdates?.[0];
@@ -701,7 +718,13 @@ function meaningfulText(value: unknown) {
   const normalized = text.toLowerCase().replace(/[.\s]+$/g, "");
   return (
     text.length > 0 &&
-    !["not specified", "none", "n/a", "unknown", "no description provided"].includes(normalized)
+    ![
+      "not specified",
+      "none",
+      "n/a",
+      "unknown",
+      "no description provided",
+    ].includes(normalized)
   );
 }
 
@@ -839,27 +862,31 @@ function parseAssistantWorkflowCommand(
     sourceText,
   );
   const mentionsOoc = /\b(?:ooc|out[-\s]?of[-\s]?cycle)\b/i.test(sourceText);
+  const mentionsCmWorkingList = isCmWorkingListStatus(sourceText);
   const mentionsActualClosure = isActualClosureStatus(sourceText);
   const hasActionIntent =
-    /\b(?:push(?:ed)?|move(?:d)?|set|mark(?:ed)?|update(?:d)?|create(?:d)?|add(?:ed)?|put|send|sent|now|done|completed|previously)\b/i.test(
+    /\b(?:push(?:ed)?|move(?:d)?|set|mark(?:ed)?|update(?:d)?|create(?:d)?|add(?:ed)?|put|send|sent|submit(?:ted)?|authoriz(?:e|ed)|queue(?:d)?|route(?:d)?|screen(?:ed)?|now|done|completed|previously)\b/i.test(
       sourceText,
     );
+  const cmListComplete = isCmWorkingListCompleteStatus(sourceText);
 
   if (
-    (!mentionsClosure && !mentionsOoc) ||
-    (!hasActionIntent && !mentionsActualClosure)
+    (!mentionsClosure && !mentionsOoc && !mentionsCmWorkingList) ||
+    (!hasActionIntent && !mentionsActualClosure && !cmListComplete)
   ) {
     return null;
   }
 
   const eccScope = extractEccScope(sourceText);
-  const status = mentionsClosure
-    ? mentionsActualClosure
-      ? "Closed"
-      : "NCDOC/xClass"
-    : mentionsOoc
-      ? "Pending OOC Approvals"
-      : undefined;
+  const status: WorkflowStatus | undefined = mentionsActualClosure
+    ? "Closed"
+    : mentionsCmWorkingList
+      ? "CM Working List"
+      : mentionsClosure
+        ? "NCDOC/xClass"
+        : mentionsOoc
+          ? "Pending OOC Approvals"
+          : undefined;
   const oocComplete =
     mentionsOoc &&
     /\b(?:previously|done|completed|complete|approved|finished)\b/i.test(
@@ -883,26 +910,46 @@ function parseAssistantWorkflowCommand(
     ...(mentionsOoc
       ? { oocApprovalStatus: oocComplete ? "Complete" : "In Progress" }
       : {}),
-    ...(mentionsClosure
+    ...(mentionsClosure && status !== "CM Working List"
       ? {
           closureNotificationStatus: mentionsActualClosure
             ? "Complete"
             : "In Progress",
         }
       : {}),
+    ...(mentionsCmWorkingList
+      ? { cmWorkingListStatus: cmListComplete ? "Complete" : "In Progress" }
+      : {}),
     author: "Collins AI",
   };
 }
 
+function isCmWorkingListStatus(value: string) {
+  return /\b(?:cm\s+working\s+list|cm\s+list|working\s+list|configuration\s+management|cm\s+queue|cs\s+queue|cmworkinglistwlox|sent\s+to\s+cm|send\s+to\s+cm|submit(?:ted)?\s+(?:the\s+)?cr\s+to\s+cm|submit(?:ted)?\s+(?:the\s+)?cr\s+to\s+workflow\s+for\s+cm|add(?:ed)?\s+(?:it\s+|this\s+|the\s+cr\s+)?to\s+(?:the\s+)?working\s+list)\b/i.test(
+    value,
+  );
+}
+
+function isCmWorkingListCompleteStatus(value: string) {
+  return (
+    isCmWorkingListStatus(value) &&
+    /\b(?:added|accepted|confirmed|complete|completed|done|response|responded|unfiltered)\b/i.test(
+      value,
+    )
+  );
+}
+
 function isActualClosureStatus(value: string) {
-  return /\b(?:actually|formally|fully|finally)\s+closed\b/i.test(value) ||
+  return (
+    /\b(?:actually|formally|fully|finally)\s+closed\b/i.test(value) ||
     /\b(?:mark(?:ed)?|set|update(?:d)?)\s+(?:it\s+|this\s+|the\s+cr\s+)?(?:as\s+)?closed\b/i.test(
       value,
     ) ||
     /\bclosure\s+(?:complete|completed|done|notification\s+(?:sent|complete|completed))\b/i.test(
       value,
     ) ||
-    /\bclosed\s+out\b/i.test(value);
+    /\bclosed\s+out\b/i.test(value)
+  );
 }
 
 function findLastUserMessage(messages: IncomingMessage[]) {
@@ -960,6 +1007,9 @@ function buildWorkflowCommandTitle(
   if (status === "Pending OOC Approvals") {
     return `${crNumber} - ${scope}OOC`;
   }
+  if (status === "CM Working List") {
+    return `${crNumber} - ${scope}CM Working List`;
+  }
   return `${crNumber} - ${scope}workflow update`;
 }
 
@@ -978,6 +1028,9 @@ function buildWorkflowCommandDisposition(
   }
   if (status === "Pending OOC Approvals") {
     return `Pending OOC approvals${scope}`;
+  }
+  if (status === "CM Working List") {
+    return `In CM Working List readiness${scope}; waiting for CM queue confirmation`;
   }
   return "";
 }
@@ -1002,6 +1055,14 @@ function buildWorkflowActionAnswer(
 
   if (command.status === "Pending OOC Approvals") {
     return `${action} ${result.crNumber} in All CRs and moved it into OOC approvals${scope}.${previous} The workflow view will update from the CR register.`;
+  }
+
+  if (command.status === "CM Working List") {
+    const cmState =
+      command.cmWorkingListStatus === "Complete"
+        ? "marked the CM Working List task complete"
+        : "moved it into CM Working List readiness";
+    return `${action} ${result.crNumber} in All CRs and ${cmState}${scope}.${previous} The workflow view will update from the CR register.`;
   }
 
   return `${action} ${result.crNumber} in All CRs. The workflow view will update from the CR register.`;

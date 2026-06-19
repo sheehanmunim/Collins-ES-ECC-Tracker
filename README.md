@@ -52,7 +52,8 @@ That command will:
 - install Ollama if missing
 - install npm dependencies
 - start Ollama if it is not already running
-- pull the selected local Ollama models if they are not already installed
+- import cached or mirrored GGUF model artifacts when available
+- pull the selected local Ollama models if no artifact is available
 - save the resolved local model choices into `.env.local`
 - configure/start a local Convex deployment
 - start the Next.js app
@@ -103,6 +104,9 @@ LOCAL_MODEL_PROFILE=auto
 # OLLAMA_VOICE_MODEL=gemma3:4b
 # OLLAMA_VISION_MODEL=granite3.2-vision:2b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL_ARTIFACT_DIR=.cache/ollama-models
+# Optional mirror for GGUF artifacts, for example a Cloudflare R2 public bucket URL.
+# OLLAMA_MODEL_MIRROR_BASE_URL=https://models.example.com/ecc
 KOKORO_MODEL=onnx-community/Kokoro-82M-v1.0-ONNX
 KOKORO_VOICE=af_heart
 KOKORO_DTYPE=q8
@@ -117,6 +121,56 @@ candidate lists for text chat, live voice, and screenshots, so the app can keep
 voice fast while still using a stronger text or vision model when the machine
 can handle it. Setting an individual `OLLAMA_*` model pins that role exactly and
 skips adaptive ranking for that role.
+
+### Mirrored Ollama Model Artifacts
+
+The repo does not commit multi-GB model files. Instead, the launcher supports a
+clone-friendly predownload path:
+
+1. It checks whether the model is already installed in Ollama.
+2. It checks `OLLAMA_MODEL_ARTIFACT_DIR` for a matching `.gguf` file.
+3. It downloads that `.gguf` from `OLLAMA_MODEL_MIRROR_BASE_URL` when configured.
+4. If the full `.gguf` is too large for one R2 upload, it downloads
+   `<file>.manifest.json` plus chunk files and reassembles the artifact locally.
+5. It imports the artifact with `ollama create`.
+6. It falls back to `ollama pull` only if the artifact path is unavailable.
+
+By default, model tags are converted into artifact names by replacing separators
+with dashes. For example:
+
+```text
+qwen3.5:4b -> .cache/ollama-models/qwen3.5-4b.gguf
+gemma3:4b -> .cache/ollama-models/gemma3-4b.gguf
+granite3.2-vision:2b -> .cache/ollama-models/granite3.2-vision-2b.gguf
+```
+
+To use Cloudflare R2 or another object store, upload the GGUF file under that
+same object name and set:
+
+```bash
+OLLAMA_MODEL_MIRROR_BASE_URL=https://your-public-model-domain.example/ecc
+```
+
+For the Cloudflare R2 bucket/domain/upload flow, see
+[`docs/r2-model-mirror.md`](./docs/r2-model-mirror.md). After the public R2 URL
+is known, save it as `mirrorBaseUrl` in
+[`config/local-models.json`](./config/local-models.json) and commit that change
+so fresh clones use the mirror automatically.
+
+For custom filenames, hashes, or Modelfile parameters, add an `artifacts` entry
+to [`config/local-models.json`](./config/local-models.json):
+
+```json
+{
+  "artifacts": {
+    "qwen3.5:4b": {
+      "fileName": "qwen3.5-4b-q4.gguf",
+      "sha256": "replace-with-the-64-character-sha256",
+      "modelfile": ["PARAMETER num_ctx 8192"]
+    }
+  }
+}
+```
 
 Voice input and output are local as well. The first dictation or voice-chat run
 downloads and caches the Moonshine speech-to-text model and Kokoro TTS model;

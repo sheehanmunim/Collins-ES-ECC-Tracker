@@ -22,10 +22,13 @@ This tracker models Engineering Change Council (ECC) work for Change Requests
 6. Post meeting: coordinator saves required PDFs, combines packages where
    applicable, uploads to the NCDOC, updates xClass fields, and records
    disposition in the tracker.
-7. Actions/OOC approvals: open actions require evidence before closure. Open
+7. CM Working List: when a CR is ready for Configuration Management (CM),
+   Engineering Services screens readiness, gathers the CM list data, and sends
+   ready CR rows to CM through the weekly CM Working List process.
+8. Actions/OOC approvals: open actions require evidence before closure. Open
    actions usually block the next meeting and OOC approvals unless the chair or
    action wording explicitly says they do not hold up progression.
-8. Closure: all actions are closed, all approvals are documented, final ECC
+9. Closure: all actions are closed, all approvals are documented, final ECC
    chair approval is obtained, final PDFs are uploaded/classified, and closure
    notification is sent.
 
@@ -161,6 +164,80 @@ Military Supplier EC terms:
 - ETFF: Engineering Task File Folder in PW TCE.
 - PW TCE: Pratt & Whitney Teamcenter Enterprise; prefer this term over PW TC.
 
+## CM Working List Process
+
+Source procedure: EC-35200 CM Working List Submission Expanded Work
+Instructions, Rev A, effective 2024-09-01. Scope is ECC Coordinator and ECC
+Chair guidance for reviewing CR readiness for Configuration Management and
+submitting ready CRs to CM. Rockford CRs do not use this process because the
+Rockford CM group has its own process.
+
+CM Working List purpose and timing:
+
+- CM asked Engineering Services to screen CRs before they go to CM.
+- Engineering Services provides CM a weekly list of CRs ready for CM to work.
+- ECC review must be held before a CR is sent to CM, but ECC closeout does not
+  have to be complete before CM is authorized to work the CR. Tell the IPT there
+  is a small risk that an ECC approver may later request a change if the CR goes
+  to CM before ECC is complete.
+- For an ECC waiver, start the CM Working List discussion as soon as the waiver
+  path is known because waiver paths often have short lead time before the CR
+  must go to CM.
+
+CM Working List IPT follow-up:
+
+- During or after the ECC meeting, tell the IPT that Engineering Services
+  screens CRs for CM and sends CM a weekly list of ready CRs.
+- For Commercial and Military ECC trackers, select the CR row and use the `CM Working List Follow-Up Email` button to draft the IPT email. Add the IPT email address and send it. For EC&A, compose a comparable email using the SharePoint tracker information.
+- If the IPT is new to the process, a short meeting can be more efficient than
+  handling the questions by email.
+- Ask for the Change Order completion date, or confirm the date if it is already
+  on the template/checklist.
+- Ask for program risk, meaning the risk to the program if the CR is not
+  completed by the Change Order completion date.
+- Share the priority code breakdown from the `Priority Codes` tab of the CM
+  Working List Tracker and ask the IPT for the CR priority code.
+- Ask whether the IPT wants the CR to go to CM before ECC is closed out, and
+  explain the change-request risk noted above.
+- Ask whether the supporting documents are uploaded to the Supporting Documents
+  NCDOC for the CR in PLM. If not, ask when the IPT expects to upload them.
+
+CM Working List tracker handling:
+
+- Record the CM list information in the appropriate location: `Commercial Weekly Output`, `Military Weekly Output`, or the EC&A SharePoint tracker.
+- Use the `Template` tab to fill in the other columns for the CR.
+- Once supporting documents are uploaded, review the CR documents for accuracy,
+  completeness, and the applicable supporting-document requirements. BCC CM on
+  emails sent to the IPT with feedback.
+- Use the Collins PLM/Change Notes/Status column for notes such as missing
+  documents, the next IPT follow-up date, `CS QUEUE`, or `CM QUEUE`.
+- When the required documents and participants are satisfactory, request that
+  the IPT submit the CR to workflow.
+- If someone from Project rather than CM is chosen as the PLM Change Specialist,
+  the Change Specialist must approve in PLM before CM works the CR. The Release
+  Status changes from `In Work` to `In Review` after Change Specialist approval.
+  Use `CS QUEUE` when the Release Status is `In Work`, and `CM QUEUE` when the
+  Release Status is `In Review`. The CR may still be sent to CM before Change
+  Specialist approval if approval is requested in parallel.
+- If 51XXXXX drawings are affected, request Engineering Services Product
+  Definition review of the Collins Marked Prints against the Pratt & Whitney
+  redlines to confirm the design intent matches.
+
+CM weekly submission:
+
+- Every Friday, an ECC coordinator or chair sends the CM Working List email to
+  `CMWorkingListWLOX@collins.com`, also shown as GP Collins WLOX CM Working List
+  - Power & Controls. The email can include Commercial, Military, and EC&A items
+  together when needed.
+- Send the email only after all required documents, based on 107-WLX-003, have
+  been uploaded under supporting documents in PLM and the ECC Chair or
+  Coordinator has reviewed them for accuracy and completeness.
+- Copy and paste the rows directly from the tracker/template into the email. Do
+  not paste the list as a photo because CM needs readable text.
+- After CM responds that the CR was added to the working list, the CR can be
+  unfiltered from the CM Working List Tracker and the tracker task can be marked
+  complete.
+
 ## Required Package Guidance
 
 - PWES Commercial/Military Class Concurrence: checklist, slide deck, WU report,
@@ -198,6 +275,9 @@ If none applies, use a concise descriptive disposition.
 - Approval evidence must identify approver, CR number, role, what was approved,
   source, and timestamp/date where available.
 - NCDOC and xClass work should remain visible as separate checklist states.
+- CM Working List is a records/CM readiness state, not closure. A CR can be on
+  the CM Working List before ECC closeout is complete if the IPT accepts the
+  risk and the required CM readiness checks are complete.
 - For MS ECC, "pushed to closure" means the CR is in NCDOC/xClass records work,
   not the Closure phase and not Closed, until NCDOC, xClass, and IPT notification
   are complete.
@@ -217,3 +297,5 @@ If none applies, use a concise descriptive disposition.
 - Military Supplier EC NCDOC title: `PWES Military Supplier ECC Checklist (EC #)`
   or `PWES Military Supplier ECC Checklist (CR-#)`, separate from the Class
   Concurrence/Class II NCDOC and separate from the Supplier EC NCDOC.
+- CM Working List email recipient: `CMWorkingListWLOX@collins.com`; copy rows
+  directly from the tracker/template instead of using a screenshot or photo.
