@@ -47,6 +47,9 @@ const modelDownloadTimeoutMs = parsePositiveInteger(
   process.env.OLLAMA_MODEL_DOWNLOAD_TIMEOUT_MS,
   30 * 60 * 1000,
 );
+const modelMirrorUserAgent =
+  process.env.OLLAMA_MODEL_MIRROR_USER_AGENT ||
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const npmCommand = process.env.npm_execpath
   ? process.execPath
   : process.platform === "win32"
@@ -673,7 +676,7 @@ function requestJsonDirect(url) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "https:" ? https : http;
-    const request = client.get(parsedUrl, (response) => {
+    const request = client.get(parsedUrl, getRequestOptions(url), (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
@@ -700,10 +703,24 @@ function requestJsonDirect(url) {
 }
 
 async function requestJsonWithCurl(url, originalError) {
-  const result = runCurl(["--fail", "--silent", "--show-error", "--location", url], {
-    encoding: "utf8",
-    timeout: 60_000,
-  });
+  const result = runCurl(
+    [
+      "--fail",
+      "--silent",
+      "--show-error",
+      "--location",
+      "--http1.1",
+      "--user-agent",
+      modelMirrorUserAgent,
+      "--header",
+      "Accept: */*",
+      url,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 60_000,
+    },
+  );
 
   if (result.status !== 0) {
     throw new Error(
@@ -742,7 +759,7 @@ function downloadFileDirect(url, targetPath, redirectCount = 0) {
     const tempPath = `${targetPath}.download`;
     fs.rmSync(tempPath, { force: true });
 
-    const request = client.get(parsedUrl, (response) => {
+    const request = client.get(parsedUrl, getRequestOptions(url), (response) => {
       const statusCode = response.statusCode ?? 500;
       const location = response.headers.location;
       if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
@@ -805,13 +822,18 @@ async function downloadFileWithCurl(url, targetPath, originalError) {
   const tempPath = `${targetPath}.download`;
   fs.rmSync(tempPath, { force: true });
 
-  console.log(`Retrying download through curl for ${url}...`);
+  console.log(`Retrying download through curl: ${url}`);
   const result = runCurl(
     [
       "--fail",
       "--silent",
       "--show-error",
       "--location",
+      "--http1.1",
+      "--user-agent",
+      modelMirrorUserAgent,
+      "--header",
+      "Accept: */*",
       "--retry",
       "3",
       "--connect-timeout",
@@ -851,6 +873,19 @@ function shouldUseCurlFallback(url, error) {
     message.includes("unable to verify") ||
     message.includes("certificate")
   );
+}
+
+function getRequestOptions(url) {
+  if (!isMirrorUrl(url)) {
+    return {};
+  }
+
+  return {
+    headers: {
+      "User-Agent": modelMirrorUserAgent,
+      Accept: "*/*",
+    },
+  };
 }
 
 function isMirrorUrl(url) {

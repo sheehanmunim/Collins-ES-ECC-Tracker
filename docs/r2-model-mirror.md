@@ -123,4 +123,6 @@ curl.exe -I https://models.fourechelon.com/ecc/gemma3-4b.gguf.parts/part-0000
 
 The launcher tries Node's built-in HTTPS client first, then retries mirror
 downloads through `curl` so corporate proxy settings and TLS inspection paths
-have a better chance of being honored.
+have a better chance of being honored. Both paths send a browser-like
+`User-Agent`, which can be overridden with `OLLAMA_MODEL_MIRROR_USER_AGENT` if a
+corporate proxy requires a specific allowlisted value.
