@@ -783,19 +783,36 @@ const workflowPhaseDefinitions: Array<{
     tasks: [],
   },
   {
-    id: "records",
-    label: "Records",
+    id: "ncdoc",
+    label: "NCDOC",
     detail: (cr) => `NCDOC ${cr.ncdocNumber || "Not set"}`,
-    statuses: ["NCDOC/xClass", "CM Working List"],
+    statuses: ["NCDOC/xClass"],
     tasks: [
       {
         label: "NCDOC",
         field: "ncdocStatus",
       },
+    ],
+  },
+  {
+    id: "xclass",
+    label: "xClass",
+    detail: (cr) =>
+      `${cr.classification ?? "TBD"} / ${cr.currentGate ?? "None"}`,
+    statuses: ["NCDOC/xClass"],
+    tasks: [
       {
         label: "xClass",
         field: "xclassStatus",
       },
+    ],
+  },
+  {
+    id: "cm-working-list",
+    label: "CM Working List",
+    detail: (cr) => `Queue status ${cr.cmWorkingListStatus ?? "Not Started"}`,
+    statuses: ["CM Working List"],
+    tasks: [
       {
         label: "CM List",
         field: "cmWorkingListStatus",
@@ -879,9 +896,9 @@ const workflowStatusPhaseIndex: Record<CrStatus, number> = {
   Implemented: 5,
   "Waiver Processing": 4,
   "NCDOC/xClass": 6,
-  "CM Working List": 6,
-  Closed: 7,
-  Rejected: 7,
+  "CM Working List": 8,
+  Closed: 9,
+  Rejected: 9,
 };
 
 const workflowPhaseTone: Record<WorkflowPhaseState, string> = {
@@ -5106,9 +5123,26 @@ function WorkflowTaskChecklistRow({
         {task.requirements?.length ? (
           <ul className="mt-1 space-y-0.5 text-[11px] font-normal leading-4 text-slate-500">
             {task.requirements.map((requirement) => (
-              <li key={requirement} className="flex gap-1.5">
-                <span aria-hidden="true">-</span>
-                <span>{requirement}</span>
+              <li
+                key={requirement}
+                className="grid grid-cols-[auto_minmax(0,1fr)] gap-1.5"
+              >
+                <span
+                  className={cn(
+                    "mt-0.5 flex h-3 w-3 items-center justify-center border",
+                    isComplete
+                      ? "border-emerald-600 bg-emerald-600 text-white"
+                      : "border-slate-300 bg-white",
+                  )}
+                  aria-hidden="true"
+                >
+                  {isComplete ? (
+                    <CheckCircle2 className="h-2.5 w-2.5" />
+                  ) : null}
+                </span>
+                <span className={cn(isComplete && "line-through")}>
+                  {requirement}
+                </span>
               </li>
             ))}
           </ul>
@@ -6386,10 +6420,15 @@ function WorkflowSummary({ cr }: { cr: Cr }) {
 }
 
 function buildWorkflowPhases(cr: Cr): WorkflowPhase[] {
+  const definitions = getWorkflowPhaseDefinitions(cr);
   const currentIndex = getWorkflowPhaseIndex(cr);
-  const blockedIndex = getBlockedWorkflowPhaseIndex(cr, currentIndex);
+  const blockedIndex = getBlockedWorkflowPhaseIndex(
+    cr,
+    definitions,
+    currentIndex,
+  );
 
-  return workflowPhaseDefinitions.map((definition, index) => {
+  return definitions.map((definition, index) => {
     const tasks = getWorkflowDefinitionTasks(definition, cr).map((task) => ({
       label: task.label,
       field: task.field,
@@ -6426,17 +6465,64 @@ function buildWorkflowPhases(cr: Cr): WorkflowPhase[] {
 
 function getWorkflowCurrentPhase(cr: Cr) {
   return (
-    workflowPhaseDefinitions[getWorkflowPhaseIndex(cr)]?.label ?? "Workflow"
+    getWorkflowPhaseDefinitions(cr)[getWorkflowPhaseIndex(cr)]?.label ??
+    "Workflow"
   );
 }
 
 function getWorkflowPhaseIndex(cr: Cr) {
-  return workflowStatusPhaseIndex[cr.status] ?? 0;
+  const definitions = getWorkflowPhaseDefinitions(cr);
+
+  if (cr.status === "NCDOC/xClass") {
+    if (!isWorkflowTaskStateComplete(getWorkflowTaskState(cr, "ncdocStatus"))) {
+      return getWorkflowPhaseDefinitionIndex("ncdoc", definitions);
+    }
+
+    if (
+      !isWorkflowTaskStateComplete(getWorkflowTaskState(cr, "xclassStatus"))
+    ) {
+      return getWorkflowPhaseDefinitionIndex("xclass", definitions);
+    }
+
+    if (isMilitarySupplierEccCr(cr)) {
+      return getWorkflowPhaseDefinitionIndex("closure", definitions);
+    }
+
+    return getWorkflowPhaseDefinitionIndex("cm-working-list", definitions);
+  }
+
+  const staticPhaseId =
+    workflowPhaseDefinitions[workflowStatusPhaseIndex[cr.status] ?? 0]?.id;
+  return staticPhaseId
+    ? getWorkflowPhaseDefinitionIndex(staticPhaseId, definitions)
+    : 0;
 }
 
-function getBlockedWorkflowPhaseIndex(cr: Cr, currentIndex: number) {
-  for (let index = 0; index < workflowPhaseDefinitions.length; index += 1) {
-    const definition = workflowPhaseDefinitions[index];
+function getWorkflowPhaseDefinitions(cr: Cr) {
+  if (isMilitarySupplierEccCr(cr)) {
+    return workflowPhaseDefinitions.filter(
+      (definition) => definition.id !== "cm-working-list",
+    );
+  }
+
+  return workflowPhaseDefinitions;
+}
+
+function getWorkflowPhaseDefinitionIndex(
+  id: string,
+  definitions: typeof workflowPhaseDefinitions,
+) {
+  const index = definitions.findIndex((definition) => definition.id === id);
+  return index >= 0 ? index : 0;
+}
+
+function getBlockedWorkflowPhaseIndex(
+  cr: Cr,
+  definitions: typeof workflowPhaseDefinitions,
+  currentIndex: number,
+) {
+  for (let index = 0; index < definitions.length; index += 1) {
+    const definition = definitions[index];
     if (
       getWorkflowDefinitionTasks(definition, cr).some(
         (task) => getWorkflowTaskState(cr, task.field) === "Blocked",
@@ -6457,18 +6543,32 @@ function getWorkflowDefinitionTasks(
     return definition.tasks;
   }
 
-  if (definition.id === "records") {
+  if (definition.id === "ncdoc") {
     return [
       {
         label: "NCDOC",
         field: "ncdocStatus",
         requirements: getMsEccNcdocRequirements(cr),
       },
+    ];
+  }
+
+  if (definition.id === "xclass") {
+    return [
       {
         label: "xClass",
         field: "xclassStatus",
         requirements: msEccXclassRequirements,
       },
+    ];
+  }
+
+  if (definition.id === "closure") {
+    if (cr.status === "Closed" || cr.status === "Rejected") {
+      return definition.tasks;
+    }
+
+    return [
       {
         label: "MS ECC Closeout",
         field: "closureNotificationStatus",
@@ -6477,10 +6577,8 @@ function getWorkflowDefinitionTasks(
     ];
   }
 
-  if (definition.id === "closure") {
-    return cr.status === "Closed" || cr.status === "Rejected"
-      ? definition.tasks
-      : [];
+  if (definition.id === "cm-working-list") {
+    return [];
   }
 
   return definition.tasks.filter(
@@ -6582,7 +6680,11 @@ function workflowChecklistSummary(tasks: WorkflowTask[]) {
 }
 
 function isChecklistTaskComplete(task: WorkflowTask) {
-  return task.state === "Complete" || task.state === "Not Applicable";
+  return isWorkflowTaskStateComplete(task.state);
+}
+
+function isWorkflowTaskStateComplete(state: TaskState) {
+  return state === "Complete" || state === "Not Applicable";
 }
 
 function workflowPhaseStateLabel(state: WorkflowPhaseState) {
