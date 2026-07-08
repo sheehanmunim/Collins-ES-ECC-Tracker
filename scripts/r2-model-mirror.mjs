@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import crypto from "node:crypto";
-import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -30,10 +29,11 @@ const location = args.location || process.env.R2_MODEL_LOCATION || "";
 const jurisdiction = args.jurisdiction || process.env.R2_MODEL_JURISDICTION || "";
 const envPath = path.resolve(root, args.envPath || ".env.local");
 const maxWranglerUploadBytes = 290 * 1024 * 1024;
-const chunkSizeBytes = parsePositiveInteger(
-  args.chunkMb || process.env.R2_MODEL_CHUNK_MB,
-  256,
-) * 1024 * 1024;
+const multipartUploadPartBytes =
+  parsePositiveInteger(args.multipartMb || process.env.R2_MODEL_MULTIPART_MB, 64) *
+  1024 *
+  1024;
+let largeObjectUploader = null;
 
 main().catch((error) => {
   console.error(`\nR2 model mirror setup failed: ${error.message}`);
@@ -171,157 +171,33 @@ async function uploadArtifacts(artifacts) {
   }
 
   let uploadedCount = 0;
-  for (const artifact of artifacts) {
-    if (!fs.existsSync(artifact.localPath)) {
-      console.warn(`Missing ${artifact.model} artifact: ${artifact.localPath}`);
-      continue;
-    }
+  try {
+    for (const artifact of artifacts) {
+      if (!fs.existsSync(artifact.localPath)) {
+        console.warn(`Missing ${artifact.model} artifact: ${artifact.localPath}`);
+        continue;
+      }
 
-    const sha256 = await sha256File(artifact.localPath);
-    if (artifact.sha256 && artifact.sha256 !== sha256) {
-      throw new Error(
-        `${artifact.localPath} hash mismatch. Expected ${artifact.sha256}, got ${sha256}.`,
-      );
-    }
+      const sha256 = await sha256File(artifact.localPath);
+      if (artifact.sha256 && artifact.sha256 !== sha256) {
+        throw new Error(
+          `${artifact.localPath} hash mismatch. Expected ${artifact.sha256}, got ${sha256}.`,
+        );
+      }
 
-    const fileSize = fs.statSync(artifact.localPath).size;
-    if (fileSize > maxWranglerUploadBytes) {
-      await uploadChunkedArtifact(artifact, sha256, fileSize);
-    } else {
       await uploadObject({
         key: artifact.objectKey,
         filePath: artifact.localPath,
         contentType: "application/octet-stream",
         cacheControl: "public, max-age=31536000, immutable",
       });
+      uploadedCount += 1;
     }
-    uploadedCount += 1;
+  } finally {
+    cleanupLargeObjectUploader();
   }
 
   console.log(`Uploaded ${uploadedCount} model artifact(s).`);
-}
-
-async function uploadChunkedArtifact(artifact, sha256, fileSize) {
-  const partDir = path.join(
-    artifactDir,
-    ".r2-parts",
-    artifact.fileName.replace(/[^A-Za-z0-9._-]+/g, "-"),
-  );
-  fs.rmSync(partDir, { recursive: true, force: true });
-  fs.mkdirSync(partDir, { recursive: true });
-
-  const parts = await createPartFiles(artifact.localPath, partDir, chunkSizeBytes);
-  const manifestParts = [];
-
-  for (const part of parts) {
-    const key = joinKey(`${artifact.objectKey}.parts`, part.name);
-    await uploadObject({
-      key,
-      filePath: part.path,
-      contentType: "application/octet-stream",
-      cacheControl: "public, max-age=31536000, immutable",
-    });
-    manifestParts.push({
-      path: `${path.basename(artifact.objectKey)}.parts/${part.name}`,
-      size: part.size,
-      sha256: part.sha256,
-    });
-  }
-
-  const manifestPath = path.join(partDir, `${artifact.fileName}.manifest.json`);
-  fs.writeFileSync(
-    manifestPath,
-    `${JSON.stringify(
-      {
-        version: 1,
-        fileName: artifact.fileName,
-        size: fileSize,
-        sha256,
-        parts: manifestParts,
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  await uploadObject({
-    key: `${artifact.objectKey}.manifest.json`,
-    filePath: manifestPath,
-    contentType: "application/json",
-    cacheControl: "public, max-age=31536000, immutable",
-  });
-}
-
-async function createPartFiles(sourcePath, partDir, maxPartSize) {
-  const parts = [];
-  const source = await fs.promises.open(sourcePath, "r");
-  const buffer = Buffer.allocUnsafe(8 * 1024 * 1024);
-  let partIndex = 0;
-  let currentPart = createPartWriter(partDir, partIndex);
-
-  try {
-    while (true) {
-      const read = await source.read(buffer, 0, buffer.length, null);
-      if (read.bytesRead === 0) {
-        break;
-      }
-
-      let offset = 0;
-      while (offset < read.bytesRead) {
-        const remainingPartBytes = maxPartSize - currentPart.size;
-        const writeLength = Math.min(remainingPartBytes, read.bytesRead - offset);
-        const chunk = buffer.subarray(offset, offset + writeLength);
-        currentPart.hash.update(chunk);
-        if (!currentPart.stream.write(chunk)) {
-          await once(currentPart.stream, "drain");
-        }
-        currentPart.size += writeLength;
-        offset += writeLength;
-
-        if (currentPart.size >= maxPartSize) {
-          parts.push(await finishPartWriter(currentPart));
-          partIndex += 1;
-          currentPart = createPartWriter(partDir, partIndex);
-        }
-      }
-    }
-  } finally {
-    await source.close();
-  }
-
-  if (currentPart.size > 0) {
-    parts.push(await finishPartWriter(currentPart));
-  } else {
-    currentPart.stream.destroy();
-    fs.rmSync(currentPart.path, { force: true });
-  }
-
-  return parts;
-}
-
-function createPartWriter(partDir, index) {
-  const name = `part-${String(index).padStart(4, "0")}`;
-  const partPath = path.join(partDir, name);
-  return {
-    name,
-    path: partPath,
-    stream: fs.createWriteStream(partPath),
-    hash: crypto.createHash("sha256"),
-    size: 0,
-  };
-}
-
-function finishPartWriter(part) {
-  return new Promise((resolve, reject) => {
-    part.stream.on("error", reject);
-    part.stream.end(() => {
-      resolve({
-        name: part.name,
-        path: part.path,
-        size: part.size,
-        sha256: part.hash.digest("hex"),
-      });
-    });
-  });
 }
 
 async function uploadObject({ key, filePath, contentType, cacheControl }) {
@@ -336,6 +212,20 @@ async function uploadObject({ key, filePath, contentType, cacheControl }) {
   }
 
   const objectPath = `${bucket}/${key}`;
+  if (fileSize > maxWranglerUploadBytes) {
+    const uploader = await getLargeObjectUploader();
+    await uploadLargeObjectWithWorker({
+      workerUrl: uploader.url,
+      token: uploader.token,
+      key,
+      filePath,
+      contentType,
+      cacheControl,
+      fileSize,
+    });
+    return;
+  }
+
   console.log(`Uploading ${filePath} to r2://${objectPath}`);
   runWrangler(
     [
@@ -350,6 +240,293 @@ async function uploadObject({ key, filePath, contentType, cacheControl }) {
     ],
     { inherit: true },
   );
+}
+
+async function getLargeObjectUploader() {
+  if (largeObjectUploader) {
+    return largeObjectUploader;
+  }
+
+  const name = `ecc-r2-full-uploader-${Date.now()}`;
+  const token = crypto.randomBytes(32).toString("base64url");
+  const workDir = path.join(root, ".cache", name);
+  fs.mkdirSync(workDir, { recursive: true });
+  const workerPath = path.join(workDir, "worker.js");
+  const configPath = path.join(workDir, "wrangler.toml");
+
+  fs.writeFileSync(workerPath, getLargeObjectUploaderWorkerSource());
+  fs.writeFileSync(
+    configPath,
+    [
+      `name = "${name}"`,
+      'main = "worker.js"',
+      'compatibility_date = "2026-07-08"',
+      "workers_dev = true",
+      "",
+      "[[r2_buckets]]",
+      'binding = "MODELS"',
+      `bucket_name = "${bucket}"`,
+      "",
+      "[vars]",
+      `UPLOAD_TOKEN = "${token}"`,
+      "",
+    ].join("\n"),
+  );
+
+  console.log("Deploying temporary R2 full-object uploader...");
+  const deploy = runWrangler(["deploy", "--config", configPath]);
+  const output = `${deploy.stdout || ""}\n${deploy.stderr || ""}`;
+  const url = output.match(/https:\/\/[^\s]+\.workers\.dev/)?.[0];
+  if (!url) {
+    cleanupTempDirectory(workDir);
+    throw new Error("Could not find temporary uploader URL in Wrangler output.");
+  }
+
+  largeObjectUploader = { name, token, url, workDir, configPath };
+  return largeObjectUploader;
+}
+
+function cleanupLargeObjectUploader() {
+  if (!largeObjectUploader) {
+    return;
+  }
+
+  try {
+    runWrangler([
+      "delete",
+      "--name",
+      largeObjectUploader.name,
+      "--force",
+    ]);
+  } catch (error) {
+    console.warn(`Could not delete temporary uploader Worker: ${error.message}`);
+  }
+
+  cleanupTempDirectory(largeObjectUploader.workDir);
+  largeObjectUploader = null;
+}
+
+function cleanupTempDirectory(directoryPath) {
+  try {
+    fs.rmSync(directoryPath, {
+      force: true,
+      maxRetries: 5,
+      recursive: true,
+      retryDelay: 500,
+    });
+  } catch (error) {
+    console.warn(`Could not clean up ${directoryPath}: ${error.message}`);
+  }
+}
+
+async function uploadLargeObjectWithWorker({
+  workerUrl,
+  token,
+  key,
+  filePath,
+  contentType,
+  cacheControl,
+  fileSize,
+}) {
+  console.log(
+    `Uploading ${filePath} as one R2 object via temporary Worker: r2://${bucket}/${key}`,
+  );
+  const { uploadId } = await requestUploaderJson({
+    workerUrl,
+    token,
+    method: "POST",
+    query: {
+      action: "create",
+      key,
+      contentType,
+      cacheControl,
+    },
+  });
+  const file = await fs.promises.open(filePath, "r");
+  const parts = [];
+  let offset = 0;
+  let partNumber = 1;
+
+  try {
+    while (offset < fileSize) {
+      const length = Math.min(multipartUploadPartBytes, fileSize - offset);
+      const buffer = Buffer.allocUnsafe(length);
+      const { bytesRead } = await file.read(buffer, 0, length, offset);
+      const body = bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead);
+      const part = await requestUploaderJson({
+        workerUrl,
+        token,
+        method: "PUT",
+        query: {
+          action: "part",
+          key,
+          uploadId,
+          partNumber: String(partNumber),
+        },
+        body,
+      });
+      parts.push(part);
+      offset += bytesRead;
+      console.log(
+        `${key}: uploaded part ${partNumber} (${formatBytes(offset)} of ${formatBytes(fileSize)})`,
+      );
+      partNumber += 1;
+    }
+  } catch (error) {
+    await requestUploaderJson({
+      workerUrl,
+      token,
+      method: "POST",
+      query: { action: "abort", key, uploadId },
+    }).catch(() => {});
+    throw error;
+  } finally {
+    await file.close();
+  }
+
+  const completed = await requestUploaderJson({
+    workerUrl,
+    token,
+    method: "POST",
+    query: {
+      action: "complete",
+      key,
+      uploadId,
+    },
+    body: Buffer.from(JSON.stringify(parts)),
+    headers: { "content-type": "application/json" },
+  });
+  console.log(`Completed ${key}: ${formatBytes(completed.size)}`);
+}
+
+async function requestUploaderJson({
+  workerUrl,
+  token,
+  method,
+  query,
+  body,
+  headers = {},
+}) {
+  const url = new URL(workerUrl);
+  for (const [key, value] of Object.entries(query)) {
+    url.searchParams.set(key, value);
+  }
+
+  const response = await fetch(url, {
+    method,
+    body,
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...headers,
+    },
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `${method} ${url.searchParams.get("action")} failed: HTTP ${response.status} ${text}`,
+    );
+  }
+  return JSON.parse(text);
+}
+
+function getLargeObjectUploaderWorkerSource() {
+  return `function json(value, status = 200) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function requireUploadToken(request, env) {
+  const expected = env.UPLOAD_TOKEN;
+  const actual = request.headers.get("authorization") || "";
+  return expected && actual === \`Bearer \${expected}\`;
+}
+
+function requireKey(url) {
+  const key = url.searchParams.get("key") || "";
+  if (!key.startsWith("ecc/") || key.includes("..")) {
+    throw new Error("Invalid key");
+  }
+  return key;
+}
+
+export default {
+  async fetch(request, env) {
+    if (!requireUploadToken(request, env)) {
+      return json({ error: "Unauthorized" }, 401);
+    }
+
+    const url = new URL(request.url);
+    const action = url.searchParams.get("action");
+
+    try {
+      if (request.method === "POST" && action === "create") {
+        const key = requireKey(url);
+        const upload = await env.MODELS.createMultipartUpload(key, {
+          httpMetadata: {
+            contentType:
+              url.searchParams.get("contentType") || "application/octet-stream",
+            cacheControl:
+              url.searchParams.get("cacheControl") ||
+              "public, max-age=31536000, immutable",
+          },
+        });
+        return json({ key, uploadId: upload.uploadId });
+      }
+
+      if (request.method === "PUT" && action === "part") {
+        const key = requireKey(url);
+        const uploadId = url.searchParams.get("uploadId") || "";
+        const partNumber = Number.parseInt(
+          url.searchParams.get("partNumber") || "",
+          10,
+        );
+        if (!uploadId || !Number.isInteger(partNumber) || partNumber <= 0) {
+          return json({ error: "Invalid multipart part request" }, 400);
+        }
+        const upload = env.MODELS.resumeMultipartUpload(key, uploadId);
+        const part = await upload.uploadPart(partNumber, request.body);
+        return json({ partNumber: part.partNumber, etag: part.etag });
+      }
+
+      if (request.method === "POST" && action === "complete") {
+        const key = requireKey(url);
+        const uploadId = url.searchParams.get("uploadId") || "";
+        const parts = await request.json();
+        if (!uploadId || !Array.isArray(parts) || parts.length === 0) {
+          return json({ error: "Invalid multipart complete request" }, 400);
+        }
+        const upload = env.MODELS.resumeMultipartUpload(key, uploadId);
+        const object = await upload.complete(
+          parts
+            .map((part) => ({
+              partNumber: Number(part.partNumber),
+              etag: String(part.etag),
+            }))
+            .sort((left, right) => left.partNumber - right.partNumber),
+        );
+        return json({ key: object.key, size: object.size, etag: object.etag });
+      }
+
+      if (request.method === "POST" && action === "abort") {
+        const key = requireKey(url);
+        const uploadId = url.searchParams.get("uploadId") || "";
+        if (!uploadId) {
+          return json({ error: "Invalid multipart abort request" }, 400);
+        }
+        const upload = env.MODELS.resumeMultipartUpload(key, uploadId);
+        await upload.abort();
+        return json({ ok: true });
+      }
+
+      return json({ error: "Not found" }, 404);
+    } catch (error) {
+      return json({ error: error.message }, 500);
+    }
+  },
+};
+`;
 }
 
 function getPublicUrlForKey(key) {
@@ -601,6 +778,17 @@ function parsePositiveInteger(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function formatBytes(bytes) {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
 function printHelp() {
   console.log(`R2 model mirror setup
 
@@ -619,7 +807,7 @@ Options:
   --location <hint>       Optional R2 location hint, such as enam or wnam.
   --jurisdiction <value>  Optional R2 jurisdiction, such as eu.
   --dev-url               Enable Cloudflare's non-production r2.dev URL.
-  --chunk-mb <size>       Chunk size for files over Wrangler's upload limit. Default: 256.
+  --multipart-mb <size>   Part size used only for maintainer-side full-object uploads. Default: 64.
   --env-path <path>       Env file to update. Default: .env.local
   --no-write-config       Do not save mirrorBaseUrl to config/local-models.json.
 `);

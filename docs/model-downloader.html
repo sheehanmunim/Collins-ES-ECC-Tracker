@@ -128,41 +128,13 @@
           name: "qwen3.5:4b",
           fileName: "qwen3.5-4b.gguf",
           size: 3389971840,
-          parts: [
-            ["qwen3.5-4b.gguf.parts/part-0000", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0001", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0002", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0003", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0004", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0005", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0006", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0007", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0008", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0009", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0010", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0011", 268435456],
-            ["qwen3.5-4b.gguf.parts/part-0012", 168746368],
-          ],
+          url: "qwen3.5-4b.gguf",
         },
         {
           name: "gemma3:4b",
           fileName: "gemma3-4b.gguf",
           size: 3338792448,
-          parts: [
-            ["gemma3-4b.gguf.parts/part-0000", 268435456],
-            ["gemma3-4b.gguf.parts/part-0001", 268435456],
-            ["gemma3-4b.gguf.parts/part-0002", 268435456],
-            ["gemma3-4b.gguf.parts/part-0003", 268435456],
-            ["gemma3-4b.gguf.parts/part-0004", 268435456],
-            ["gemma3-4b.gguf.parts/part-0005", 268435456],
-            ["gemma3-4b.gguf.parts/part-0006", 268435456],
-            ["gemma3-4b.gguf.parts/part-0007", 268435456],
-            ["gemma3-4b.gguf.parts/part-0008", 268435456],
-            ["gemma3-4b.gguf.parts/part-0009", 268435456],
-            ["gemma3-4b.gguf.parts/part-0010", 268435456],
-            ["gemma3-4b.gguf.parts/part-0011", 268435456],
-            ["gemma3-4b.gguf.parts/part-0012", 117566976],
-          ],
+          url: "gemma3-4b.gguf",
         },
       ];
 
@@ -216,10 +188,10 @@
         });
       }
 
-      async function streamPart(partPath, writer, onBytes) {
-        const response = await fetch(partPath, { cache: "no-store" });
+      async function streamModelFile(model, writer, onBytes) {
+        const response = await fetch(model.url, { cache: "no-store" });
         if (!response.ok || !response.body) {
-          throw new Error(`${partPath} returned HTTP ${response.status}`);
+          throw new Error(`${model.url} returned HTTP ${response.status}`);
         }
 
         const reader = response.body.getReader();
@@ -245,15 +217,12 @@
         let downloaded = 0;
 
         try {
-          for (let index = 0; index < model.parts.length; index += 1) {
-            const [partPath] = model.parts[index];
-            state.status.textContent = `${model.fileName} - chunk ${index + 1} of ${model.parts.length}`;
-            log(`${model.fileName}: downloading ${partPath}`);
-            await streamPart(partPath, writer, (bytes) => {
-              downloaded += bytes;
-              state.progress.value = downloaded;
-            });
-          }
+          state.status.textContent = `${model.fileName} - downloading`;
+          log(`${model.fileName}: downloading ${model.url}`);
+          await streamModelFile(model, writer, (bytes) => {
+            downloaded += bytes;
+            state.progress.value = downloaded;
+          });
           await writer.close();
         } catch (error) {
           await writer.abort();

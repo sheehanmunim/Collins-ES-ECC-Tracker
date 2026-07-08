@@ -133,10 +133,8 @@ clone-friendly predownload path:
 1. It checks whether the model is already installed in Ollama.
 2. It checks `OLLAMA_MODEL_ARTIFACT_DIR` for a matching `.gguf` file.
 3. It downloads that `.gguf` from `OLLAMA_MODEL_MIRROR_BASE_URL` when configured.
-4. If the full `.gguf` is too large for one R2 upload, it downloads
-   `<file>.manifest.json` plus chunk files and reassembles the artifact locally.
-5. It imports the artifact with `ollama create`.
-6. By default, it stops there and does not call `ollama pull`. To allow registry
+4. It imports the artifact with `ollama create`.
+5. By default, it stops there and does not call `ollama pull`. To allow registry
    fallback on a maintainer machine, set `OLLAMA_DISABLE_REGISTRY_FALLBACK=0`.
 
 By default, model tags are converted into artifact names by replacing separators
@@ -154,9 +152,9 @@ upload instead of attempting Ollama's public registry.
 
 Some corporate endpoint policies allow Chrome downloads from the mirror while
 blocking Node, `curl`, PowerShell, and BITS. In that case, `npm run local`
-launches Chrome or Edge as the download engine, saves chunks into
-`.cache/ollama-models`, reassembles the GGUF file, and imports it into Ollama
-without requiring folder selection.
+launches Chrome or Edge as the download engine, saves the full GGUF file into
+`.cache/ollama-models`, and imports it into Ollama without requiring folder
+selection.
 
 To use Cloudflare R2 or another object store, upload the GGUF file under that
 same object name and set:

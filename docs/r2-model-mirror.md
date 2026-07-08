@@ -70,9 +70,9 @@ That command will:
 - create the R2 bucket if needed
 - connect the custom domain to the bucket
 - upload configured local GGUF artifacts to `ecc/<file-name>.gguf`
-- split large artifacts into `ecc/<file-name>.parts/part-0000` chunks when
-  Wrangler cannot upload the file in one request
-- upload `ecc/<file-name>.manifest.json` so fresh clones can reassemble chunks
+- deploy a temporary authenticated Worker uploader for files larger than
+  Wrangler can upload directly, then remove that Worker after the final single
+  R2 object is complete
 - write `OLLAMA_MODEL_MIRROR_BASE_URL` to `.env.local`
 - write `mirrorBaseUrl` to `config/local-models.json`
 
@@ -87,8 +87,7 @@ After replacing or adding files under `.cache/ollama-models`, upload again:
 npm run models:r2:upload -- --bucket ecc-local-models --mirror-url https://models.fourechelon.com/ecc
 ```
 
-The upload is resumable. If it is interrupted, rerun the same command; existing
-remote chunks with the expected size are skipped.
+If the full-file upload is interrupted, rerun the same command.
 
 To only save the public mirror URL into local env and committed config:
 
@@ -111,14 +110,12 @@ for corporate distribution.
 ## Corporate Network Troubleshooting
 
 Fresh clones use `https://models.fourechelon.com/ecc` by default. If startup
-uses committed chunk manifests from `config/model-manifests/` so it does not
-need to fetch `.manifest.json` files over the corporate network. If startup
-fails while downloading mirrored artifacts, first confirm the laptop can reach a
-model chunk:
+fails while downloading mirrored artifacts, first confirm the laptop can reach
+the full model objects:
 
 ```powershell
-curl.exe -I https://models.fourechelon.com/ecc/qwen3.5-4b.gguf.parts/part-0000
-curl.exe -I https://models.fourechelon.com/ecc/gemma3-4b.gguf.parts/part-0000
+curl.exe -I https://models.fourechelon.com/ecc/qwen3.5-4b.gguf
+curl.exe -I https://models.fourechelon.com/ecc/gemma3-4b.gguf
 ```
 
 The launcher tries Node's built-in HTTPS client first, then retries mirror

@@ -401,10 +401,6 @@ async function ensureOllamaModelFromArtifact(name, artifact = getModelArtifact(n
     hasArtifact = await tryDownloadModelArtifact(name, artifact);
   }
 
-  if (!hasArtifact && !artifact.preferManifest && artifact.manifestUrl) {
-    hasArtifact = await tryDownloadChunkedModelArtifact(name, artifact);
-  }
-
   if (!hasArtifact) {
     return false;
   }
@@ -469,7 +465,7 @@ function formatRegistryFallbackDisabledMessage(name, artifact) {
   ];
   if (modelMirrorBrowserDownloaderUrl) {
     parts.push(
-      `If Chrome can download model chunks but command-line tools cannot, open ${modelMirrorBrowserDownloaderUrl} and select this repo folder.`,
+      `If Chrome can download model files but command-line tools cannot, open ${modelMirrorBrowserDownloaderUrl} and select this repo folder.`,
     );
   }
   return parts.join(" ");
@@ -582,7 +578,7 @@ function getModelArtifact(name) {
   const manifestUrl =
     typeof configured.manifestUrl === "string" && configured.manifestUrl.trim()
       ? configured.manifestUrl.trim()
-      : url
+      : configured.preferManifest && url
         ? `${url}.manifest.json`
         : "";
   const manifestPath =
