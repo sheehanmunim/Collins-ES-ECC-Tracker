@@ -25,6 +25,15 @@ const artifactDir = path.resolve(
     process.env.OLLAMA_MODEL_ARTIFACT_DIR ||
     path.join(".cache", "ollama-models"),
 );
+const convexLocalBackendVersion =
+  args.convexBackendVersion ||
+  process.env.CONVEX_LOCAL_BACKEND_VERSION ||
+  modelConfig.convexLocalBackendVersion ||
+  "precompiled-2026-06-09-b6aaa1a";
+const convexArtifactDir = path.resolve(
+  root,
+  args.convexArtifactDir || path.join(".cache", "convex", convexLocalBackendVersion),
+);
 const location = args.location || process.env.R2_MODEL_LOCATION || "";
 const jurisdiction = args.jurisdiction || process.env.R2_MODEL_JURISDICTION || "";
 const envPath = path.resolve(root, args.envPath || ".env.local");
@@ -166,7 +175,7 @@ function enableDevUrl() {
 
 async function uploadArtifacts(artifacts) {
   if (artifacts.length === 0) {
-    console.log("No model artifacts are configured in config/local-models.json.");
+    console.log("No mirror artifacts are configured.");
     return;
   }
 
@@ -174,8 +183,12 @@ async function uploadArtifacts(artifacts) {
   try {
     for (const artifact of artifacts) {
       if (!fs.existsSync(artifact.localPath)) {
-        console.warn(`Missing ${artifact.model} artifact: ${artifact.localPath}`);
-        continue;
+        if (artifact.downloadUrl) {
+          await downloadArtifactFile(artifact);
+        } else {
+          console.warn(`Missing ${artifact.label} artifact: ${artifact.localPath}`);
+          continue;
+        }
       }
 
       const sha256 = await sha256File(artifact.localPath);
@@ -188,7 +201,7 @@ async function uploadArtifacts(artifacts) {
       await uploadObject({
         key: artifact.objectKey,
         filePath: artifact.localPath,
-        contentType: "application/octet-stream",
+        contentType: artifact.contentType || "application/octet-stream",
         cacheControl: "public, max-age=31536000, immutable",
       });
       uploadedCount += 1;
@@ -197,7 +210,13 @@ async function uploadArtifacts(artifacts) {
     cleanupLargeObjectUploader();
   }
 
-  console.log(`Uploaded ${uploadedCount} model artifact(s).`);
+  console.log(`Uploaded ${uploadedCount} mirror artifact(s).`);
+}
+
+async function downloadArtifactFile(artifact) {
+  fs.mkdirSync(path.dirname(artifact.localPath), { recursive: true });
+  console.log(`Downloading ${artifact.label}: ${artifact.downloadUrl}`);
+  await downloadFileToPath(artifact.downloadUrl, artifact.localPath);
 }
 
 async function uploadObject({ key, filePath, contentType, cacheControl }) {
@@ -566,7 +585,7 @@ function getConfiguredArtifacts() {
       ? modelConfig.artifacts
       : {};
 
-  return Object.entries(configuredArtifacts).map(([model, artifact]) => {
+  const modelArtifacts = Object.entries(configuredArtifacts).map(([model, artifact]) => {
     const fileName =
       typeof artifact.fileName === "string" && artifact.fileName.trim()
         ? artifact.fileName.trim()
@@ -582,8 +601,48 @@ function getConfiguredArtifacts() {
     const objectKey = joinKey(prefix, remotePath);
     const sha256 = normalizeSha256(artifact.sha256);
 
-    return { model, fileName, localPath, remotePath, objectKey, sha256 };
+    return {
+      label: model,
+      model,
+      fileName,
+      localPath,
+      remotePath,
+      objectKey,
+      sha256,
+      contentType: "application/octet-stream",
+    };
   });
+
+  return [...modelArtifacts, ...getConvexSupportArtifacts()];
+}
+
+function getConvexSupportArtifacts() {
+  const releaseBaseUrl = `https://github.com/get-convex/convex-backend/releases/download/${convexLocalBackendVersion}`;
+  const backendZipName = "convex-local-backend-x86_64-pc-windows-msvc.zip";
+  const artifacts = [
+    {
+      label: `Convex backend ${convexLocalBackendVersion}`,
+      fileName: backendZipName,
+      localPath: path.join(convexArtifactDir, backendZipName),
+      remotePath: `convex/${convexLocalBackendVersion}/${backendZipName}`,
+      downloadUrl: joinUrl(releaseBaseUrl, backendZipName),
+      contentType: "application/zip",
+    },
+    {
+      label: `Convex dashboard ${convexLocalBackendVersion}`,
+      fileName: "dashboard.zip",
+      localPath: path.join(convexArtifactDir, "dashboard.zip"),
+      remotePath: `convex/${convexLocalBackendVersion}/dashboard.zip`,
+      downloadUrl: joinUrl(releaseBaseUrl, "dashboard.zip"),
+      contentType: "application/zip",
+    },
+  ];
+
+  return artifacts.map((artifact) => ({
+    ...artifact,
+    objectKey: joinKey(prefix, artifact.remotePath),
+    sha256: "",
+  }));
 }
 
 function printMirrorUrls(artifacts) {
@@ -594,8 +653,78 @@ function printMirrorUrls(artifacts) {
 
   console.log("\nMirror URLs:");
   for (const artifact of artifacts) {
-    console.log(`- ${artifact.model}: ${joinUrl(mirrorUrl, artifact.remotePath)}`);
+    console.log(`- ${artifact.label}: ${joinUrl(mirrorUrl, artifact.remotePath)}`);
   }
+}
+
+function downloadFileToPath(url, targetPath, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 5) {
+      reject(new Error("Too many redirects"));
+      return;
+    }
+
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === "https:" ? https : http;
+    const tempPath = `${targetPath}.download`;
+    fs.rmSync(tempPath, { force: true });
+
+    const request = client.get(parsedUrl, (response) => {
+      const statusCode = response.statusCode ?? 500;
+      const location = response.headers.location;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+        response.resume();
+        downloadFileToPath(new URL(location, parsedUrl).toString(), targetPath, redirectCount + 1)
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
+
+      if (statusCode >= 400) {
+        response.resume();
+        reject(new Error(`HTTP ${statusCode}`));
+        return;
+      }
+
+      const totalBytes = Number(response.headers["content-length"] ?? 0);
+      let downloadedBytes = 0;
+      let lastProgressAt = Date.now();
+      const output = fs.createWriteStream(tempPath);
+
+      response.on("data", (chunk) => {
+        downloadedBytes += chunk.length;
+        if (Date.now() - lastProgressAt >= 10_000) {
+          lastProgressAt = Date.now();
+          console.log(
+            totalBytes > 0
+              ? `Downloaded ${formatBytes(downloadedBytes)} of ${formatBytes(totalBytes)}...`
+              : `Downloaded ${formatBytes(downloadedBytes)}...`,
+          );
+        }
+      });
+
+      response.pipe(output);
+      output.on("finish", () => {
+        output.close(() => {
+          fs.renameSync(tempPath, targetPath);
+          resolve();
+        });
+      });
+      output.on("error", (error) => {
+        response.destroy();
+        fs.rmSync(tempPath, { force: true });
+        reject(error);
+      });
+    });
+
+    request.on("error", (error) => {
+      fs.rmSync(tempPath, { force: true });
+      reject(error);
+    });
+    request.setTimeout(10 * 60 * 1000, () => {
+      request.destroy(new Error("Download timed out"));
+    });
+  });
 }
 
 function ensureWranglerAvailable() {
@@ -790,7 +919,7 @@ function formatBytes(bytes) {
 }
 
 function printHelp() {
-  console.log(`R2 model mirror setup
+  console.log(`R2 model and support artifact mirror setup
 
 Usage:
   node scripts/r2-model-mirror.mjs setup --bucket ecc-local-models --domain models.fourechelon.com
@@ -804,6 +933,10 @@ Options:
   --mirror-url <url>      Exact public base URL for OLLAMA_MODEL_MIRROR_BASE_URL.
   --prefix <path>         Object key prefix. Default: ecc
   --artifact-dir <path>   Local GGUF artifact folder. Default: .cache/ollama-models
+  --convex-backend-version <version>
+                         Convex local backend release to mirror.
+  --convex-artifact-dir <path>
+                         Local Convex zip cache folder. Default: .cache/convex/<version>
   --location <hint>       Optional R2 location hint, such as enam or wnam.
   --jurisdiction <value>  Optional R2 jurisdiction, such as eu.
   --dev-url               Enable Cloudflare's non-production r2.dev URL.
