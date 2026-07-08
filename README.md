@@ -40,6 +40,9 @@ Windows:
 .\start-windows.cmd
 ```
 
+The Windows launcher first sets the current user's PowerShell execution policy
+to `RemoteSigned`, then starts the local bootstrap script.
+
 macOS/Linux:
 
 ```bash
