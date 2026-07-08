@@ -1,6 +1,8 @@
 {
   "defaultProfile": "balanced",
   "mirrorBaseUrl": "https://models.fourechelon.com/ecc",
+  "convexLocalBackendVersion": "precompiled-2026-06-09-b6aaa1a",
+  "convexBackendMirrorBaseUrl": "https://models.fourechelon.com/ecc",
   "disableRegistryFallback": true,
   "artifacts": {
     "qwen3.5:4b": {

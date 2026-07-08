@@ -59,7 +59,8 @@ That command will:
 - import cached or mirrored GGUF model artifacts when available
 - pull the selected local Ollama models if no artifact is available
 - save the resolved local model choices into `.env.local`
-- configure/start a local Convex deployment
+- cache the pinned local Convex backend/dashboard and configure a local
+  anonymous Convex deployment without contacting Convex cloud
 - start the Next.js app
 
 Open the app:
@@ -68,8 +69,10 @@ Open the app:
 http://localhost:3000
 ```
 
-On first run, Convex writes `.env.local` with the local deployment URL. That
-file is intentionally ignored by Git.
+On first run, the launcher writes local Convex state under `.convex/` and
+model choices into `.env.local`. Those files are intentionally ignored by Git so
+each laptop keeps its own CRs, users, model cache, and local database across
+future pulls.
 
 You can also run the scripts directly:
 

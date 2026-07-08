@@ -62,6 +62,19 @@ const manualBrowserDownloaderPromptEnabled = parseBoolean(
   process.env.OLLAMA_MODEL_MANUAL_BROWSER_PROMPT,
   false,
 );
+const convexLocalBackendVersion =
+  process.env.CONVEX_LOCAL_BACKEND_VERSION ||
+  modelConfig.convexLocalBackendVersion ||
+  "precompiled-2026-06-09-b6aaa1a";
+const convexBackendMirrorBaseUrl = normalizeOptionalUrl(
+  process.env.CONVEX_BACKEND_MIRROR_BASE_URL ||
+    modelConfig.convexBackendMirrorBaseUrl ||
+    modelMirrorBaseUrl,
+);
+const convexDownloadTimeoutMs = parsePositiveInteger(
+  process.env.CONVEX_BACKEND_DOWNLOAD_TIMEOUT_MS,
+  10 * 60 * 1000,
+);
 const npmCommand = process.env.npm_execpath
   ? process.execPath
   : process.platform === "win32"
@@ -119,6 +132,8 @@ async function main() {
     return;
   }
 
+  await ensureConvexLocalDeploymentReady();
+
   if (setupOnly) {
     console.log("\nSetup complete. Run `npm run local` to start the tracker.");
     return;
@@ -136,6 +151,7 @@ async function main() {
       OLLAMA_VISION_MODEL: visionModel,
       OLLAMA_BASE_URL: ollamaBaseUrl,
       LOCAL_MODEL_PROFILE: modelProfileName,
+      CONVEX_LOCAL_BACKEND_VERSION: convexLocalBackendVersion,
     },
     stdio: "inherit",
   });
@@ -175,7 +191,8 @@ function printHeader() {
   );
   console.log(`Seed text model: ${model}`);
   console.log(`Seed voice model: ${voiceModel}`);
-  console.log(`Seed vision model: ${visionModel}\n`);
+  console.log(`Seed vision model: ${visionModel}`);
+  console.log(`Convex backend: ${convexLocalBackendVersion}\n`);
 }
 
 function printResolvedModels() {
@@ -184,6 +201,312 @@ function printResolvedModels() {
   console.log(`- Voice: ${voiceModel}`);
   console.log(`- Screenshots: ${visionModel}`);
   console.log("- Saved model choices to .env.local");
+}
+
+async function ensureConvexLocalDeploymentReady() {
+  if (modelsOnly) {
+    return;
+  }
+
+  console.log("\nPreparing local Convex backend...");
+  const backendBinaryPath = await ensureConvexBackendBinary();
+  await ensureConvexDashboard();
+  ensureConvexAnonymousConfig(backendBinaryPath);
+}
+
+async function ensureConvexBackendBinary() {
+  const binaryPath = getConvexBackendBinaryPath();
+  if (fs.existsSync(binaryPath)) {
+    console.log(`Convex backend ${convexLocalBackendVersion} is already cached.`);
+    return binaryPath;
+  }
+
+  const zipName = getConvexBackendZipName();
+  const zipPath = path.join(
+    root,
+    ".cache",
+    "convex",
+    convexLocalBackendVersion,
+    zipName,
+  );
+  await downloadConvexArtifact({
+    label: "Convex backend",
+    remotePath: `convex/${convexLocalBackendVersion}/${zipName}`,
+    officialUrl: `https://github.com/get-convex/convex-backend/releases/download/${convexLocalBackendVersion}/${zipName}`,
+    targetPath: zipPath,
+  });
+
+  const extractDir = path.join(
+    root,
+    ".cache",
+    "convex",
+    convexLocalBackendVersion,
+    "backend-extracted",
+  );
+  fs.rmSync(extractDir, { recursive: true, force: true });
+  await extractZip(zipPath, extractDir);
+
+  const extractedBinary = findFileByName(extractDir, getConvexBackendExecutableName());
+  if (!extractedBinary) {
+    throw new Error(`Downloaded Convex backend did not contain ${getConvexBackendExecutableName()}.`);
+  }
+
+  fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
+  fs.copyFileSync(extractedBinary, binaryPath);
+  fs.chmodSync(binaryPath, 0o755);
+  fs.rmSync(extractDir, { recursive: true, force: true });
+  console.log(`Cached Convex backend at ${binaryPath}.`);
+  return binaryPath;
+}
+
+async function ensureConvexDashboard() {
+  const dashboardConfigPath = path.join(getConvexCacheDir(), "dashboard", "config.json");
+  if (fs.existsSync(dashboardConfigPath)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(dashboardConfigPath, "utf8"));
+      if (config?.version === convexLocalBackendVersion) {
+        console.log(`Convex dashboard ${convexLocalBackendVersion} is already cached.`);
+        return;
+      }
+    } catch {
+      // Rewrite corrupt dashboard cache below.
+    }
+  }
+
+  const zipPath = path.join(
+    root,
+    ".cache",
+    "convex",
+    convexLocalBackendVersion,
+    "dashboard.zip",
+  );
+  await downloadConvexArtifact({
+    label: "Convex dashboard",
+    remotePath: `convex/${convexLocalBackendVersion}/dashboard.zip`,
+    officialUrl: `https://github.com/get-convex/convex-backend/releases/download/${convexLocalBackendVersion}/dashboard.zip`,
+    targetPath: zipPath,
+  });
+
+  const dashboardDir = path.join(getConvexCacheDir(), "dashboard");
+  const outDir = path.join(dashboardDir, "out");
+  fs.rmSync(outDir, { recursive: true, force: true });
+  fs.mkdirSync(outDir, { recursive: true });
+  await extractZip(zipPath, outDir);
+  fs.writeFileSync(
+    dashboardConfigPath,
+    JSON.stringify({ version: convexLocalBackendVersion }),
+  );
+  console.log(`Cached Convex dashboard ${convexLocalBackendVersion}.`);
+}
+
+function ensureConvexAnonymousConfig(backendBinaryPath) {
+  const configPath = path.join(root, ".convex", "local", "default", "config.json");
+  if (fs.existsSync(configPath)) {
+    console.log("Local Convex deployment config is already present.");
+    return;
+  }
+
+  const deploymentName = "anonymous-agent";
+  const instanceSecret = crypto.randomBytes(32).toString("hex");
+  const adminKey = generateConvexAdminKey({
+    backendBinaryPath,
+    deploymentName,
+    instanceSecret,
+  });
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.mkdirSync(path.join(root, ".convex"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".convex", ".gitignore"), "/*\n");
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      ports: {
+        cloud: 3210,
+        site: 3211,
+      },
+      backendVersion: convexLocalBackendVersion,
+      adminKey,
+      instanceSecret,
+      deploymentName,
+    }),
+  );
+  console.log("Created local Convex deployment config without contacting Convex cloud.");
+}
+
+function generateConvexAdminKey({
+  backendBinaryPath,
+  deploymentName,
+  instanceSecret,
+}) {
+  const result = spawnSync(
+    backendBinaryPath,
+    [
+      "keygen",
+      "admin-key",
+      "--instance-name",
+      deploymentName,
+      "--instance-secret",
+      instanceSecret,
+    ],
+    {
+      cwd: root,
+      encoding: "utf8",
+      shell: false,
+      timeout: 30_000,
+    },
+  );
+
+  if (result.status !== 0 || !result.stdout.trim()) {
+    throw new Error(`Could not generate local Convex admin key: ${formatProcessError(result)}`);
+  }
+
+  return result.stdout.trim();
+}
+
+async function downloadConvexArtifact({
+  label,
+  remotePath,
+  officialUrl,
+  targetPath,
+}) {
+  const mirrorUrl = convexBackendMirrorBaseUrl
+    ? joinUrl(convexBackendMirrorBaseUrl, remotePath)
+    : "";
+  const candidates = unique([mirrorUrl, officialUrl]);
+  let lastError = null;
+
+  for (const url of candidates) {
+    try {
+      console.log(`Downloading ${label}: ${url}`);
+      await downloadFile(url, targetPath, { timeoutMs: convexDownloadTimeoutMs });
+      return;
+    } catch (error) {
+      lastError = error;
+      console.warn(`${label} download failed from ${url}: ${formatErrorMessage(error)}`);
+    }
+  }
+
+  throw new Error(
+    `Could not download ${label}. Upload ${remotePath} to ${convexBackendMirrorBaseUrl || "the configured Convex mirror"} or allow access to ${officialUrl}. Last error: ${formatErrorMessage(lastError)}`,
+  );
+}
+
+async function extractZip(zipPath, destinationDir) {
+  fs.mkdirSync(destinationDir, { recursive: true });
+
+  if (process.platform === "win32") {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "Expand-Archive -LiteralPath $env:ZIP_PATH -DestinationPath $env:ZIP_DESTINATION -Force",
+    ].join("; ");
+    const result = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ZIP_PATH: zipPath,
+          ZIP_DESTINATION: destinationDir,
+        },
+        shell: false,
+        timeout: convexDownloadTimeoutMs,
+      },
+    );
+    if (result.status !== 0) {
+      throw new Error(`Could not extract ${zipPath}: ${formatProcessError(result)}`);
+    }
+    return;
+  }
+
+  const unzipResult = spawnSync("unzip", ["-oq", zipPath, "-d", destinationDir], {
+    cwd: root,
+    encoding: "utf8",
+    shell: false,
+    timeout: convexDownloadTimeoutMs,
+  });
+  if (unzipResult.status === 0) {
+    return;
+  }
+
+  const pythonResult = spawnSync(
+    "python3",
+    ["-m", "zipfile", "-e", zipPath, destinationDir],
+    {
+      cwd: root,
+      encoding: "utf8",
+      shell: false,
+      timeout: convexDownloadTimeoutMs,
+    },
+  );
+  if (pythonResult.status !== 0) {
+    throw new Error(`Could not extract ${zipPath}: ${formatProcessError(pythonResult)}`);
+  }
+}
+
+function findFileByName(directory, fileName) {
+  const entries = fs.readdirSync(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isFile() && entry.name === fileName) {
+      return entryPath;
+    }
+    if (entry.isDirectory()) {
+      const nested = findFileByName(entryPath, fileName);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return "";
+}
+
+function getConvexBackendBinaryPath() {
+  return path.join(
+    getConvexCacheDir(),
+    "binaries",
+    convexLocalBackendVersion,
+    getConvexBackendExecutableName(),
+  );
+}
+
+function getConvexBackendExecutableName() {
+  return process.platform === "win32"
+    ? "convex-local-backend.exe"
+    : "convex-local-backend";
+}
+
+function getConvexBackendZipName() {
+  if (process.platform === "win32") {
+    return "convex-local-backend-x86_64-pc-windows-msvc.zip";
+  }
+  if (process.platform === "darwin") {
+    return process.arch === "arm64"
+      ? "convex-local-backend-aarch64-apple-darwin.zip"
+      : "convex-local-backend-x86_64-apple-darwin.zip";
+  }
+  if (process.platform === "linux") {
+    return process.arch === "arm64"
+      ? "convex-local-backend-aarch64-unknown-linux-gnu.zip"
+      : "convex-local-backend-x86_64-unknown-linux-gnu.zip";
+  }
+  throw new Error(
+    `Unsupported platform ${process.platform}/${process.arch} for Convex local backend.`,
+  );
+}
+
+function getConvexCacheDir() {
+  if (process.platform === "win32") {
+    if (process.env.LOCALAPPDATA) {
+      return path.join(process.env.LOCALAPPDATA, "convex");
+    }
+    if (process.env.USERPROFILE) {
+      return path.join(process.env.USERPROFILE, "AppData", "Local", "convex");
+    }
+    return path.join(os.homedir(), "AppData", "Local", "convex");
+  }
+  return path.join(os.homedir(), ".cache", "convex");
 }
 
 function requireCommand(command, args, label) {
@@ -829,20 +1152,23 @@ async function requestJsonWithCurl(url, originalError) {
   }
 }
 
-async function downloadFile(url, targetPath, redirectCount = 0) {
+async function downloadFile(url, targetPath, options = {}) {
+  const downloadOptions = {
+    timeoutMs: options.timeoutMs ?? modelDownloadTimeoutMs,
+  };
   try {
-    return await downloadFileDirect(url, targetPath, redirectCount);
+    return await downloadFileDirect(url, targetPath, downloadOptions);
   } catch (error) {
     if (!shouldUseCurlFallback(url, error)) {
       throw error;
     }
     try {
-      await downloadFileWithCurl(url, targetPath, error);
+      await downloadFileWithCurl(url, targetPath, error, downloadOptions);
     } catch (curlError) {
       let fallbackError = curlError;
       if (process.platform === "win32") {
         try {
-          await downloadFileWithPowerShell(url, targetPath, curlError);
+          await downloadFileWithPowerShell(url, targetPath, curlError, downloadOptions);
           return;
         } catch (powerShellError) {
           fallbackError = powerShellError;
@@ -852,12 +1178,12 @@ async function downloadFile(url, targetPath, redirectCount = 0) {
       if (!shouldUseBrowserFallback(url)) {
         throw fallbackError;
       }
-      await downloadFileWithBrowser(url, targetPath, fallbackError);
+      await downloadFileWithBrowser(url, targetPath, fallbackError, downloadOptions);
     }
   }
 }
 
-function downloadFileDirect(url, targetPath, redirectCount = 0) {
+function downloadFileDirect(url, targetPath, options, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     if (redirectCount > 5) {
       reject(new Error("Too many redirects"));
@@ -875,7 +1201,12 @@ function downloadFileDirect(url, targetPath, redirectCount = 0) {
       const location = response.headers.location;
       if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
         response.resume();
-        downloadFileDirect(new URL(location, parsedUrl).toString(), targetPath, redirectCount + 1)
+        downloadFileDirect(
+          new URL(location, parsedUrl).toString(),
+          targetPath,
+          options,
+          redirectCount + 1,
+        )
           .then(resolve)
           .catch(reject);
         return;
@@ -922,13 +1253,13 @@ function downloadFileDirect(url, targetPath, redirectCount = 0) {
       fs.rmSync(tempPath, { force: true });
       reject(error);
     });
-    request.setTimeout(modelDownloadTimeoutMs, () => {
+    request.setTimeout(options.timeoutMs, () => {
       request.destroy(new Error("Download timed out"));
     });
   });
 }
 
-async function downloadFileWithCurl(url, targetPath, originalError) {
+async function downloadFileWithCurl(url, targetPath, originalError, options) {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const tempPath = `${targetPath}.download`;
   fs.rmSync(tempPath, { force: true });
@@ -950,12 +1281,12 @@ async function downloadFileWithCurl(url, targetPath, originalError) {
       "--connect-timeout",
       "30",
       "--max-time",
-      String(Math.ceil(modelDownloadTimeoutMs / 1000)),
+      String(Math.ceil(options.timeoutMs / 1000)),
       "--output",
       tempPath,
       url,
     ],
-    { timeout: modelDownloadTimeoutMs },
+    { timeout: options.timeoutMs },
   );
 
   if (result.status !== 0) {
@@ -968,7 +1299,7 @@ async function downloadFileWithCurl(url, targetPath, originalError) {
   fs.renameSync(tempPath, targetPath);
 }
 
-async function downloadFileWithPowerShell(url, targetPath, originalError) {
+async function downloadFileWithPowerShell(url, targetPath, originalError, options) {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const tempPath = `${targetPath}.download`;
   fs.rmSync(tempPath, { force: true });
@@ -1010,7 +1341,7 @@ async function downloadFileWithPowerShell(url, targetPath, originalError) {
         MODEL_DOWNLOAD_USER_AGENT: modelMirrorUserAgent,
       },
       shell: false,
-      timeout: modelDownloadTimeoutMs,
+      timeout: options.timeoutMs,
     },
   );
 
@@ -1024,7 +1355,7 @@ async function downloadFileWithPowerShell(url, targetPath, originalError) {
   fs.renameSync(tempPath, targetPath);
 }
 
-async function downloadFileWithBrowser(url, targetPath, originalError) {
+async function downloadFileWithBrowser(url, targetPath, originalError, options) {
   const browserPath = findBrowserExecutable();
   if (!browserPath) {
     throw new Error(
@@ -1063,6 +1394,7 @@ async function downloadFileWithBrowser(url, targetPath, originalError) {
       targetPath,
       startedAt,
       () => exitCode,
+      options.timeoutMs,
     );
   } catch (error) {
     throw new Error(
@@ -1125,11 +1457,12 @@ async function waitForBrowserDownload(
   targetPath,
   startedAt,
   getExitCode,
+  timeoutMs,
 ) {
   let lastSize = -1;
   let stableSince = 0;
 
-  while (Date.now() - startedAt < modelDownloadTimeoutMs) {
+  while (Date.now() - startedAt < timeoutMs) {
     const downloadedPath = findBrowserDownloadedFile(
       downloadDirs,
       fileName,
@@ -1366,7 +1699,9 @@ function getRequestOptions(url) {
 }
 
 function isMirrorUrl(url) {
-  return Boolean(modelMirrorBaseUrl && url.startsWith(`${modelMirrorBaseUrl}/`));
+  return unique([modelMirrorBaseUrl, convexBackendMirrorBaseUrl]).some((baseUrl) =>
+    url.startsWith(`${baseUrl}/`),
+  );
 }
 
 function runCurl(args, options = {}) {

@@ -6,7 +6,7 @@
     "local": "node scripts/local-dev.mjs",
     "setup": "node scripts/local-dev.mjs --setup-only",
     "dev": "convex dev --start \"next dev --webpack\"",
-    "dev:local": "cross-env CONVEX_AGENT_MODE=anonymous convex dev --start \"next dev --webpack\"",
+    "dev:local": "cross-env CONVEX_AGENT_MODE=anonymous convex dev --local-backend-version precompiled-2026-06-09-b6aaa1a --start \"next dev --webpack\"",
     "convex:local": "cross-env CONVEX_AGENT_MODE=anonymous convex dev",
     "codegen": "convex codegen --typecheck disable",
     "prebuild": "npm run codegen",
