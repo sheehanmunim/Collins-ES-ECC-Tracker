@@ -69,6 +69,19 @@ const taskState = v.union(
   v.literal("Not Applicable"),
 );
 
+const taskStateField = v.union(
+  v.literal("documentationNotificationStatus"),
+  v.literal("preMeetingReviewStatus"),
+  v.literal("meetingAttendanceStatus"),
+  v.literal("postMeetingPdfStatus"),
+  v.literal("ncdocStatus"),
+  v.literal("xclassStatus"),
+  v.literal("oocApprovalStatus"),
+  v.literal("chairApprovalStatus"),
+  v.literal("closureNotificationStatus"),
+  v.literal("cmWorkingListStatus"),
+);
+
 const actionStatus = v.union(
   v.literal("Open"),
   v.literal("Closed"),
@@ -198,4 +211,19 @@ export default defineSchema({
     .index("by_crId", ["crId"])
     .index("by_userKey", ["userKey"])
     .index("by_userKey_and_crId", ["userKey", "crId"]),
+  crWorkflowRequirementChecks: defineTable({
+    crId: v.id("crs"),
+    taskField: taskStateField,
+    requirementKey: v.string(),
+    label: v.string(),
+    complete: v.boolean(),
+    updatedAt: v.number(),
+  })
+    .index("by_crId", ["crId"])
+    .index("by_crId_and_taskField", ["crId", "taskField"])
+    .index("by_crId_and_taskField_and_requirementKey", [
+      "crId",
+      "taskField",
+      "requirementKey",
+    ]),
 });

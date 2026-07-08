@@ -74,6 +74,7 @@ type Cr = Doc<"crs">;
 type CrUpdate = Doc<"crUpdates">;
 type CrAction = Doc<"crActions">;
 type CrApproval = Doc<"crApprovals">;
+type WorkflowRequirementCheck = Doc<"crWorkflowRequirementChecks">;
 type CrId = Id<"crs">;
 type CrActionId = Id<"crActions">;
 type CrApprovalId = Id<"crApprovals">;
@@ -355,7 +356,7 @@ type WorkflowTask = {
   label: string;
   field: TaskStateField;
   state: TaskState;
-  requirements?: string[];
+  requirements?: WorkflowRequirement[];
   examples?: WorkflowExample[];
 };
 
@@ -370,6 +371,16 @@ type WorkflowExample = {
   label: string;
   src: string;
 };
+
+type WorkflowRequirement = {
+  key: string;
+  label: string;
+  complete: boolean;
+};
+
+type WorkflowRequirementCompletion = Partial<
+  Record<TaskStateField, Record<string, boolean>>
+>;
 
 type WorkflowPhase = {
   id: string;
@@ -4440,6 +4451,7 @@ function WorkflowChart({
   onExpandedChange: (value: boolean) => void;
 }) {
   const updateCr = useMutation(api.crs.update);
+  const setRequirementCheck = useMutation(api.crs.setWorkflowRequirementCheck);
   const workflowViewportRef = useRef<HTMLDivElement>(null);
   const workflowCanvasShellRef = useRef<HTMLDivElement>(null);
   const workflowPanRef = useRef<WorkflowPanState | null>(null);
@@ -4448,6 +4460,9 @@ function WorkflowChart({
   const [savingTaskField, setSavingTaskField] = useState<TaskStateField | null>(
     null,
   );
+  const [savingRequirementKey, setSavingRequirementKey] = useState<
+    string | null
+  >(null);
   const [taskError, setTaskError] = useState("");
   const [workflowZoom, setWorkflowZoom] = useState(1);
   const [fitZoom, setFitZoom] = useState(1);
@@ -4465,9 +4480,17 @@ function WorkflowChart({
   const [workflowPhasePositions, setWorkflowPhasePositions] = useState<
     Partial<Record<string, WhiteboardPosition>>
   >(() => (cr ? readWorkflowPhasePositions(cr._id) : {}));
+  const requirementChecks = useQuery(
+    api.crs.listWorkflowRequirementChecks,
+    cr ? { crId: cr._id } : "skip",
+  );
+  const requirementCompletion = useMemo(
+    () => buildWorkflowRequirementCompletion(requirementChecks ?? []),
+    [requirementChecks],
+  );
   const workflowPhases = useMemo(
-    () => (cr ? buildWorkflowPhases(cr) : []),
-    [cr],
+    () => (cr ? buildWorkflowPhases(cr, requirementCompletion) : []),
+    [cr, requirementCompletion],
   );
   const positionedWorkflowPhases = useMemo(
     () =>
@@ -4665,6 +4688,42 @@ function WorkflowChart({
       );
     } finally {
       setSavingTaskField(null);
+    }
+  }
+
+  async function handleRequirementChange(
+    task: WorkflowTask,
+    requirement: WorkflowRequirement,
+    complete: boolean,
+  ) {
+    if (!cr || savingRequirementKey) {
+      return;
+    }
+
+    const requirementSaveKey = `${task.field}:${requirement.key}`;
+    setSavingRequirementKey(requirementSaveKey);
+    setTaskError("");
+    try {
+      await setRequirementCheck({
+        crId: cr._id,
+        taskField: task.field,
+        requirementKey: requirement.key,
+        label: requirement.label,
+        complete,
+        requirements:
+          task.requirements?.map((item) => ({
+            key: item.key,
+            label: item.label,
+          })) ?? [],
+      });
+    } catch (caught) {
+      setTaskError(
+        caught instanceof Error
+          ? caught.message
+          : "Unable to update requirement.",
+      );
+    } finally {
+      setSavingRequirementKey(null);
     }
   }
 
@@ -4872,7 +4931,7 @@ function WorkflowChart({
       className={cn(
         panelShell,
         "flex flex-col overflow-hidden bg-white",
-        isExpanded ? "h-[calc(100vh-12rem)] min-h-[580px]" : "min-h-[580px]",
+        isExpanded ? "h-[calc(100vh-6rem)] min-h-[580px]" : "min-h-[580px]",
       )}
     >
       <div className={cn(panelHeader, "shrink-0")}>
@@ -5037,8 +5096,12 @@ function WorkflowChart({
                   phase={phase}
                   position={index + 1}
                   savingTaskField={savingTaskField}
+                  savingRequirementKey={savingRequirementKey}
                   onTaskStateChange={(task, state) =>
                     void handleTaskStateChange(task, state)
+                  }
+                  onRequirementChange={(task, requirement, complete) =>
+                    void handleRequirementChange(task, requirement, complete)
                   }
                 />
               </div>
@@ -5096,12 +5159,20 @@ function WorkflowPhaseCard({
   phase,
   position,
   savingTaskField,
+  savingRequirementKey,
   onTaskStateChange,
+  onRequirementChange,
 }: {
   phase: WorkflowPhase;
   position: number;
   savingTaskField: TaskStateField | null;
+  savingRequirementKey: string | null;
   onTaskStateChange: (task: WorkflowTask, state: TaskState) => void;
+  onRequirementChange: (
+    task: WorkflowTask,
+    requirement: WorkflowRequirement,
+    complete: boolean,
+  ) => void;
 }) {
   const checklistSummary = workflowChecklistSummary(phase.tasks);
   const [isChecklistOpen, setIsChecklistOpen] = useState(
@@ -5175,8 +5246,12 @@ function WorkflowPhaseCard({
                   key={task.field}
                   task={task}
                   saving={savingTaskField === task.field}
-                  disabled={Boolean(savingTaskField)}
+                  savingRequirementKey={savingRequirementKey}
+                  disabled={Boolean(savingTaskField || savingRequirementKey)}
                   onStateChange={(state) => onTaskStateChange(task, state)}
+                  onRequirementChange={(requirement, complete) =>
+                    onRequirementChange(task, requirement, complete)
+                  }
                 />
               ))
             ) : (
@@ -5194,16 +5269,94 @@ function WorkflowPhaseCard({
 function WorkflowTaskChecklistRow({
   task,
   saving,
+  savingRequirementKey,
   disabled,
   onStateChange,
+  onRequirementChange,
 }: {
   task: WorkflowTask;
   saving: boolean;
+  savingRequirementKey: string | null;
   disabled: boolean;
   onStateChange: (state: TaskState) => void;
+  onRequirementChange: (
+    requirement: WorkflowRequirement,
+    complete: boolean,
+  ) => void;
 }) {
   const isComplete = task.state === "Complete";
   const inputId = `workflow-task-${task.field}`;
+  const requirementSummary = workflowRequirementSummary(task);
+
+  if (task.requirements?.length) {
+    return (
+      <div
+        className={cn(
+          "border px-2 py-2 text-xs transition",
+          isComplete
+            ? "border-slate-200 bg-slate-50 text-slate-500"
+            : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
+          disabled && "opacity-70",
+        )}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="font-semibold leading-5 text-slate-800">
+              {task.label}
+            </p>
+            <p className={cn("text-[11px] font-medium", requirementSummary.tone)}>
+              {requirementSummary.label}
+            </p>
+          </div>
+          <span
+            className={cn(
+              "min-w-fit max-w-[104px] shrink-0 text-right font-semibold leading-5",
+              taskStateTone(task.state),
+            )}
+          >
+            {task.state}
+          </span>
+        </div>
+        <div className="mt-2 space-y-1.5">
+          {task.requirements.map((requirement) => {
+            const requirementSaveKey = `${task.field}:${requirement.key}`;
+            const isRequirementSaving =
+              savingRequirementKey === requirementSaveKey;
+
+            return (
+              <label
+                key={requirement.key}
+                className={cn(
+                  "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] gap-2 text-[11px] leading-4 text-slate-600",
+                  requirement.complete && "text-slate-400 line-through",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={requirement.complete}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    onRequirementChange(requirement, event.target.checked)
+                  }
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-emerald-600"
+                  aria-label={`${requirement.label} complete`}
+                />
+                <span>{requirement.label}</span>
+                {isRequirementSaving ? (
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-red-600" />
+                ) : (
+                  <span aria-hidden="true" />
+                )}
+              </label>
+            );
+          })}
+        </div>
+        {task.examples?.length ? (
+          <WorkflowTaskExamples examples={task.examples} />
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -5236,61 +5389,8 @@ function WorkflowTaskChecklistRow({
         >
           {task.label}
         </label>
-        {task.requirements?.length ? (
-          <ul className="mt-1 space-y-0.5 text-[11px] font-normal leading-4 text-slate-500">
-            {task.requirements.map((requirement) => (
-              <li
-                key={requirement}
-                className="grid grid-cols-[auto_minmax(0,1fr)] gap-1.5"
-              >
-                <span
-                  className={cn(
-                    "mt-0.5 flex h-3 w-3 items-center justify-center border",
-                    isComplete
-                      ? "border-emerald-600 bg-emerald-600 text-white"
-                      : "border-slate-300 bg-white",
-                  )}
-                  aria-hidden="true"
-                >
-                  {isComplete ? (
-                    <CheckCircle2 className="h-2.5 w-2.5" />
-                  ) : null}
-                </span>
-                <span className={cn(isComplete && "line-through")}>
-                  {requirement}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
         {task.examples?.length ? (
-          <details className="mt-2 border border-slate-200 bg-slate-50 text-slate-700">
-            <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-semibold">
-              Screenshot examples
-            </summary>
-            <div className="grid gap-2 border-t border-slate-200 p-2">
-              {task.examples.map((example) => (
-                <a
-                  key={example.src}
-                  href={example.src}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block overflow-hidden border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                >
-                  <Image
-                    src={example.src}
-                    alt={example.label}
-                    width={220}
-                    height={132}
-                    className="h-20 w-full object-cover object-top"
-                  />
-                  <span className="block px-2 py-1 text-[11px] font-medium leading-4">
-                    {example.label}
-                  </span>
-                </a>
-              ))}
-            </div>
-          </details>
+          <WorkflowTaskExamples examples={task.examples} />
         ) : null}
       </div>
       <span className="min-w-fit max-w-[104px] shrink-0 text-right leading-5">
@@ -5310,6 +5410,38 @@ function WorkflowTaskChecklistRow({
         )}
       </span>
     </div>
+  );
+}
+
+function WorkflowTaskExamples({ examples }: { examples: WorkflowExample[] }) {
+  return (
+    <details className="mt-2 border border-slate-200 bg-slate-50 text-slate-700">
+      <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-semibold">
+        Screenshot examples
+      </summary>
+      <div className="grid gap-2 border-t border-slate-200 p-2">
+        {examples.map((example) => (
+          <a
+            key={example.src}
+            href={example.src}
+            target="_blank"
+            rel="noreferrer"
+            className="block overflow-hidden border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+          >
+            <Image
+              src={example.src}
+              alt={example.label}
+              width={220}
+              height={132}
+              className="h-20 w-full object-cover object-top"
+            />
+            <span className="block px-2 py-1 text-[11px] font-medium leading-4">
+              {example.label}
+            </span>
+          </a>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -6564,7 +6696,10 @@ function WorkflowSummary({ cr }: { cr: Cr }) {
   );
 }
 
-function buildWorkflowPhases(cr: Cr): WorkflowPhase[] {
+function buildWorkflowPhases(
+  cr: Cr,
+  requirementCompletion: WorkflowRequirementCompletion = {},
+): WorkflowPhase[] {
   const definitions = getWorkflowPhaseDefinitions(cr);
   const currentIndex = getWorkflowPhaseIndex(cr);
   const blockedIndex = getBlockedWorkflowPhaseIndex(
@@ -6574,13 +6709,25 @@ function buildWorkflowPhases(cr: Cr): WorkflowPhase[] {
   );
 
   return definitions.map((definition, index) => {
-    const tasks = getWorkflowDefinitionTasks(definition, cr).map((task) => ({
-      label: task.label,
-      field: task.field,
-      requirements: task.requirements,
-      examples: task.examples,
-      state: getWorkflowTaskState(cr, task.field),
-    }));
+    const tasks = getWorkflowDefinitionTasks(definition, cr).map((task) => {
+      const requirements = buildWorkflowRequirements(
+        task,
+        cr,
+        requirementCompletion,
+      );
+      const state = getWorkflowTaskDisplayState(
+        getWorkflowTaskState(cr, task.field),
+        requirements,
+      );
+
+      return {
+        label: task.label,
+        field: task.field,
+        requirements,
+        examples: task.examples,
+        state,
+      };
+    });
     const blocked =
       (cr.status === "Blocked" && index === currentIndex) ||
       blockedIndex === index ||
@@ -6679,6 +6826,72 @@ function getBlockedWorkflowPhaseIndex(
   }
 
   return cr.status === "Blocked" ? currentIndex : null;
+}
+
+function buildWorkflowRequirements(
+  task: WorkflowDefinitionTask,
+  cr: Cr,
+  requirementCompletion: WorkflowRequirementCompletion,
+): WorkflowRequirement[] | undefined {
+  if (!task.requirements?.length) {
+    return undefined;
+  }
+
+  const taskState = getWorkflowTaskState(cr, task.field);
+  const defaultComplete = taskState === "Complete";
+  const taskCompletion = requirementCompletion[task.field] ?? {};
+
+  return task.requirements.map((label) => {
+    const key = getWorkflowRequirementKey(task.field, label);
+    return {
+      key,
+      label,
+      complete: taskCompletion[key] ?? defaultComplete,
+    };
+  });
+}
+
+function getWorkflowTaskDisplayState(
+  state: TaskState,
+  requirements?: WorkflowRequirement[],
+): TaskState {
+  if (!requirements?.length || state === "Blocked" || state === "Not Applicable") {
+    return state;
+  }
+
+  const completeCount = requirements.filter(
+    (requirement) => requirement.complete,
+  ).length;
+
+  if (completeCount === requirements.length) {
+    return "Complete";
+  }
+
+  return completeCount > 0 ? "In Progress" : "Not Started";
+}
+
+function buildWorkflowRequirementCompletion(
+  checks: WorkflowRequirementCheck[],
+): WorkflowRequirementCompletion {
+  return checks.reduce<WorkflowRequirementCompletion>((result, check) => {
+    const field = check.taskField as TaskStateField;
+    result[field] = {
+      ...(result[field] ?? {}),
+      [check.requirementKey]: check.complete,
+    };
+    return result;
+  }, {});
+}
+
+function getWorkflowRequirementKey(field: TaskStateField, label: string) {
+  const normalizedLabel = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+
+  return `${field}:${normalizedLabel || "requirement"}`;
 }
 
 function getWorkflowDefinitionTasks(
@@ -6805,43 +7018,101 @@ function workflowChecklistSummary(tasks: WorkflowTask[]) {
     };
   }
 
-  const completed = tasks.filter(isChecklistTaskComplete).length;
+  const total = getWorkflowChecklistItemCount(tasks);
+  const completed = getWorkflowChecklistCompletedCount(tasks);
   const blocked = tasks.some((task) => task.state === "Blocked");
   const inProgress = tasks.some((task) => task.state === "In Progress");
 
   if (blocked) {
     return {
-      label: `${completed}/${tasks.length} complete, blocked`,
+      label: `${completed}/${total} complete, blocked`,
       tone: "text-rose-700",
     };
   }
 
-  if (completed === tasks.length) {
+  if (completed === total) {
     return {
-      label: `${completed}/${tasks.length} complete`,
+      label: `${completed}/${total} complete`,
       tone: "text-emerald-700",
     };
   }
 
   if (inProgress) {
     return {
-      label: `${completed}/${tasks.length} complete, in progress`,
+      label: `${completed}/${total} complete, in progress`,
       tone: "text-blue-700",
     };
   }
 
   return {
-    label: `${completed}/${tasks.length} complete`,
+    label: `${completed}/${total} complete`,
     tone: "text-slate-500",
   };
 }
 
 function isChecklistTaskComplete(task: WorkflowTask) {
+  if (task.requirements?.length) {
+    return task.requirements.every((requirement) => requirement.complete);
+  }
+
   return isWorkflowTaskStateComplete(task.state);
 }
 
 function isWorkflowTaskStateComplete(state: TaskState) {
   return state === "Complete" || state === "Not Applicable";
+}
+
+function workflowRequirementSummary(task: WorkflowTask) {
+  const total = task.requirements?.length ?? 0;
+  const completed =
+    task.requirements?.filter((requirement) => requirement.complete).length ??
+    0;
+
+  if (total === 0) {
+    return {
+      label: task.state,
+      tone: taskStateTone(task.state),
+    };
+  }
+
+  if (completed === total) {
+    return {
+      label: `${completed}/${total} complete`,
+      tone: "text-emerald-700",
+    };
+  }
+
+  if (completed > 0 || task.state === "In Progress") {
+    return {
+      label: `${completed}/${total} complete, in progress`,
+      tone: "text-blue-700",
+    };
+  }
+
+  return {
+    label: `${completed}/${total} complete`,
+    tone: "text-slate-500",
+  };
+}
+
+function getWorkflowChecklistItemCount(tasks: WorkflowTask[]) {
+  return tasks.reduce(
+    (count, task) => count + (task.requirements?.length ?? 1),
+    0,
+  );
+}
+
+function getWorkflowChecklistCompletedCount(tasks: WorkflowTask[]) {
+  return tasks.reduce((count, task) => {
+    if (task.requirements?.length) {
+      return (
+        count +
+        task.requirements.filter((requirement) => requirement.complete).length
+      );
+    }
+
+    return count + (isWorkflowTaskStateComplete(task.state) ? 1 : 0);
+  }, 0);
 }
 
 function workflowPhaseStateLabel(state: WorkflowPhaseState) {

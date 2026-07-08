@@ -70,6 +70,19 @@ const taskState = v.union(
   v.literal("Not Applicable"),
 );
 
+const taskStateField = v.union(
+  v.literal("documentationNotificationStatus"),
+  v.literal("preMeetingReviewStatus"),
+  v.literal("meetingAttendanceStatus"),
+  v.literal("postMeetingPdfStatus"),
+  v.literal("ncdocStatus"),
+  v.literal("xclassStatus"),
+  v.literal("oocApprovalStatus"),
+  v.literal("chairApprovalStatus"),
+  v.literal("closureNotificationStatus"),
+  v.literal("cmWorkingListStatus"),
+);
+
 const actionStatus = v.union(
   v.literal("Open"),
   v.literal("Closed"),
@@ -292,6 +305,137 @@ export const updateWhiteboardPosition = mutation({
     }
 
     return { crId: args.crId, x, y };
+  },
+});
+
+export const listWorkflowRequirementChecks = query({
+  args: { crId: v.id("crs") },
+  handler: async (ctx, args) => {
+    await requireAuthenticated(ctx);
+    await requireCr(ctx, args.crId);
+
+    return await ctx.db
+      .query("crWorkflowRequirementChecks")
+      .withIndex("by_crId", (q) => q.eq("crId", args.crId))
+      .take(200);
+  },
+});
+
+export const setWorkflowRequirementCheck = mutation({
+  args: {
+    crId: v.id("crs"),
+    taskField: taskStateField,
+    requirementKey: v.string(),
+    label: v.string(),
+    complete: v.boolean(),
+    requirements: v.array(
+      v.object({
+        key: v.string(),
+        label: v.string(),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireAuthenticated(ctx);
+    const cr = await requireCr(ctx, args.crId);
+    const now = Date.now();
+    const requirementKey = args.requirementKey.trim();
+    const label = cleanText(args.label, "Requirement");
+    const requirements = args.requirements
+      .map((requirement) => ({
+        key: requirement.key.trim(),
+        label: cleanText(requirement.label, "Requirement"),
+      }))
+      .filter((requirement) => requirement.key.length > 0)
+      .slice(0, 50);
+
+    if (!requirementKey) {
+      throw new Error("Requirement key is required.");
+    }
+    if (!requirements.some((requirement) => requirement.key === requirementKey)) {
+      throw new Error("Requirement key is not part of this checklist.");
+    }
+
+    const existingRows = await ctx.db
+      .query("crWorkflowRequirementChecks")
+      .withIndex("by_crId_and_taskField", (q) =>
+        q.eq("crId", args.crId).eq("taskField", args.taskField),
+      )
+      .take(200);
+    const rowByKey = new Map(
+      existingRows.map((row) => [row.requirementKey, row]),
+    );
+    const existing = rowByKey.get(requirementKey);
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        label,
+        complete: args.complete,
+        updatedAt: now,
+      });
+    } else {
+      const insertedId = await ctx.db.insert("crWorkflowRequirementChecks", {
+        crId: args.crId,
+        taskField: args.taskField,
+        requirementKey,
+        label,
+        complete: args.complete,
+        updatedAt: now,
+      });
+      const inserted = await ctx.db.get(insertedId);
+      if (inserted) {
+        rowByKey.set(requirementKey, inserted);
+      }
+    }
+
+    if (cr[args.taskField] === "Complete") {
+      for (const requirement of requirements) {
+        if (rowByKey.has(requirement.key)) {
+          continue;
+        }
+
+        const seededId = await ctx.db.insert("crWorkflowRequirementChecks", {
+          crId: args.crId,
+          taskField: args.taskField,
+          requirementKey: requirement.key,
+          label: requirement.label,
+          complete: requirement.key === requirementKey ? args.complete : true,
+          updatedAt: now,
+        });
+        const seeded = await ctx.db.get(seededId);
+        if (seeded) {
+          rowByKey.set(requirement.key, seeded);
+        }
+      }
+    }
+
+    const completedCount = requirements.filter((requirement) => {
+      const row = rowByKey.get(requirement.key);
+      if (requirement.key === requirementKey) {
+        return args.complete;
+      }
+      return Boolean(row?.complete);
+    }).length;
+    const nextState: Doc<"crs">["ncdocStatus"] =
+      completedCount === requirements.length
+        ? "Complete"
+        : completedCount > 0
+          ? "In Progress"
+          : "Not Started";
+
+    await ctx.db.patch(args.crId, {
+      [args.taskField]: nextState,
+      lastUpdatedAt: now,
+    });
+
+    return {
+      crId: args.crId,
+      taskField: args.taskField,
+      requirementKey,
+      complete: args.complete,
+      state: nextState,
+      updatedBy: identity.tokenIdentifier,
+    };
   },
 });
 
@@ -1004,12 +1148,17 @@ export const deleteArchived = mutation({
       .query("crWhiteboardPositions")
       .withIndex("by_crId", (q) => q.eq("crId", args.id))
       .take(maxRelatedRows);
+    const requirementChecks = await ctx.db
+      .query("crWorkflowRequirementChecks")
+      .withIndex("by_crId", (q) => q.eq("crId", args.id))
+      .take(maxRelatedRows);
 
     if (
       updates.length >= maxRelatedRows ||
       actions.length >= maxRelatedRows ||
       approvals.length >= maxRelatedRows ||
-      positions.length >= maxRelatedRows
+      positions.length >= maxRelatedRows ||
+      requirementChecks.length >= maxRelatedRows
     ) {
       throw new Error(
         "This CR has too many related records to delete in one operation.",
@@ -1027,6 +1176,9 @@ export const deleteArchived = mutation({
     }
     for (const position of positions) {
       await ctx.db.delete(position._id);
+    }
+    for (const requirementCheck of requirementChecks) {
+      await ctx.db.delete(requirementCheck._id);
     }
 
     await ctx.db.delete(args.id);
@@ -1472,7 +1624,10 @@ export const assistantCrDetails = query({
   },
 });
 
-async function requireCr(ctx: MutationCtx, id: Id<"crs">) {
+async function requireCr(
+  ctx: Pick<QueryCtx | MutationCtx, "db">,
+  id: Id<"crs">,
+) {
   const cr = await ctx.db.get(id);
   if (!cr || cr.isArchived) {
     throw new Error("CR not found.");
