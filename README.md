@@ -189,6 +189,28 @@ downloads and caches the Moonshine speech-to-text model and Kokoro TTS model;
 after they are cached, set `LOCAL_STT_OFFLINE=1` and `KOKORO_OFFLINE=1` if you
 want to force fully offline voice mode.
 
+## Local Data And Pulls
+
+Git tracks the app source, scripts, docs, and committed model mirror config. It
+does not track machine-local runtime state:
+
+- CR data and local Convex database state live under `.convex/`.
+- local environment values live in `.env.local`.
+- downloaded GGUF model files live under `.cache/ollama-models/`.
+- generated assistant skill bundles live under `.agents/` and `.claude/`.
+
+That means a user can pull app updates with `git pull` without replacing their
+existing local CRs, model cache, or machine-specific settings.
+
+Older clones may already have generated assistant skill files tracked. If Git
+shows only `AGENTS.md`, `CLAUDE.md`, `skills-lock.json`, `.agents/`, or
+`.claude/` as modified, discard just that generated metadata before pulling:
+
+```bash
+git restore AGENTS.md CLAUDE.md skills-lock.json .agents .claude
+git pull
+```
+
 ## Useful Commands
 
 ```bash

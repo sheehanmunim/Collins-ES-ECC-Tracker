@@ -25,6 +25,15 @@
 .DS_Store
 *.pem
 
+# local app data and generated assistant tooling
+/.convex/
+/.agents/
+/.claude/
+/.cursor/
+/AGENTS.md
+/CLAUDE.md
+/skills-lock.json
+
 # debug
 npm-debug.log*
 yarn-debug.log*
