@@ -102,11 +102,14 @@ LOCAL_MODEL_PROFILE=auto
 # Optional: pin exact models to bypass adaptive local selection.
 # OLLAMA_MODEL=qwen3.5:4b
 # OLLAMA_VOICE_MODEL=gemma3:4b
-# OLLAMA_VISION_MODEL=granite3.2-vision:2b
+# OLLAMA_VISION_MODEL=gemma3:4b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL_ARTIFACT_DIR=.cache/ollama-models
 # Optional mirror for GGUF artifacts, for example a Cloudflare R2 public bucket URL.
 # OLLAMA_MODEL_MIRROR_BASE_URL=https://models.example.com/ecc
+# Keep this enabled for corporate laptops that cannot reach Ollama's registry.
+# Set to 0 only on maintainer machines that are allowed to run `ollama pull`.
+OLLAMA_DISABLE_REGISTRY_FALLBACK=1
 KOKORO_MODEL=onnx-community/Kokoro-82M-v1.0-ONNX
 KOKORO_VOICE=af_heart
 KOKORO_DTYPE=q8
@@ -133,7 +136,8 @@ clone-friendly predownload path:
 4. If the full `.gguf` is too large for one R2 upload, it downloads
    `<file>.manifest.json` plus chunk files and reassembles the artifact locally.
 5. It imports the artifact with `ollama create`.
-6. It falls back to `ollama pull` only if the artifact path is unavailable.
+6. By default, it stops there and does not call `ollama pull`. To allow registry
+   fallback on a maintainer machine, set `OLLAMA_DISABLE_REGISTRY_FALLBACK=0`.
 
 By default, model tags are converted into artifact names by replacing separators
 with dashes. For example:
@@ -141,8 +145,12 @@ with dashes. For example:
 ```text
 qwen3.5:4b -> .cache/ollama-models/qwen3.5-4b.gguf
 gemma3:4b -> .cache/ollama-models/gemma3-4b.gguf
-granite3.2-vision:2b -> .cache/ollama-models/granite3.2-vision-2b.gguf
 ```
+
+The committed model config disables registry fallback so corporate laptops use
+the Cloudflare/custom mirror path only. If a required artifact is missing from
+the mirror, startup fails with the exact local path and mirror object name to
+upload instead of attempting Ollama's public registry.
 
 To use Cloudflare R2 or another object store, upload the GGUF file under that
 same object name and set:

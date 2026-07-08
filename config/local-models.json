@@ -1,6 +1,7 @@
 {
   "defaultProfile": "balanced",
   "mirrorBaseUrl": "https://pub-94d1b8aec98a4b2fa8dce25bdd5ab332.r2.dev/ecc",
+  "disableRegistryFallback": true,
   "artifacts": {
     "qwen3.5:4b": {
       "fileName": "qwen3.5-4b.gguf",
@@ -14,6 +15,27 @@
         "PARAMETER top_p 0.95"
       ],
       "sha256": "81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490"
+    },
+    "gemma3:4b": {
+      "fileName": "gemma3-4b.gguf",
+      "modelfile": [
+        "TEMPLATE \"\"\"{{- range $i, $_ := .Messages }}",
+        "{{- $last := eq (len (slice $.Messages $i)) 1 }}",
+        "{{- if or (eq .Role \"user\") (eq .Role \"system\") }}<start_of_turn>user",
+        "{{ .Content }}<end_of_turn>",
+        "{{ if $last }}<start_of_turn>model",
+        "{{ end }}",
+        "{{- else if eq .Role \"assistant\" }}<start_of_turn>model",
+        "{{ .Content }}{{ if not $last }}<end_of_turn>",
+        "{{ end }}",
+        "{{- end }}",
+        "{{- end }}\"\"\"",
+        "PARAMETER temperature 1",
+        "PARAMETER top_k 64",
+        "PARAMETER top_p 0.95",
+        "PARAMETER stop <end_of_turn>"
+      ],
+      "sha256": "aeda25e63ebd698fab8638ffb778e68bed908b960d39d0becc650fa981609d25"
     }
   },
   "profiles": {
@@ -25,12 +47,12 @@
     "balanced": {
       "chat": "qwen3.5:4b",
       "voice": "gemma3:4b",
-      "vision": "granite3.2-vision:2b"
+      "vision": "gemma3:4b"
     },
     "quality": {
       "chat": "qwen3.5:4b",
       "voice": "gemma3:4b",
-      "vision": "granite3.2-vision:2b"
+      "vision": "gemma3:4b"
     }
   },
   "weights": {
@@ -162,16 +184,16 @@
     ],
     "vision": [
       {
-        "name": "granite3.2-vision:2b",
-        "minRamGb": 6,
-        "quality": 8.8,
-        "speed": 8
-      },
-      {
         "name": "gemma3:4b",
         "minRamGb": 8,
         "quality": 7.8,
         "speed": 7.6
+      },
+      {
+        "name": "granite3.2-vision:2b",
+        "minRamGb": 6,
+        "quality": 7.4,
+        "speed": 8
       },
       {
         "name": "qwen2.5vl:3b",
@@ -209,8 +231,8 @@
       "granite3.2:2b"
     ],
     "vision": [
-      "granite3.2-vision:2b",
       "gemma3:4b",
+      "granite3.2-vision:2b",
       "qwen2.5vl:3b",
       "llava-phi3:3.8b"
     ]

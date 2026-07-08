@@ -39,6 +39,10 @@ const modelArtifactDir = path.resolve(
 const modelMirrorBaseUrl = normalizeOptionalUrl(
   process.env.OLLAMA_MODEL_MIRROR_BASE_URL || modelConfig.mirrorBaseUrl,
 );
+const registryFallbackDisabled = parseBoolean(
+  process.env.OLLAMA_DISABLE_REGISTRY_FALLBACK,
+  Boolean(modelConfig.disableRegistryFallback),
+);
 const modelDownloadTimeoutMs = parsePositiveInteger(
   process.env.OLLAMA_MODEL_DOWNLOAD_TIMEOUT_MS,
   30 * 60 * 1000,
@@ -146,6 +150,9 @@ function printHeader() {
   if (modelMirrorBaseUrl) {
     console.log(`Model mirror: ${modelMirrorBaseUrl}`);
   }
+  console.log(
+    `Ollama registry fallback: ${registryFallbackDisabled ? "disabled" : "enabled"}`,
+  );
   console.log(`System memory: ${systemMemoryGb.toFixed(1)} GB`);
   console.log(
     `Model profile: ${modelProfileName}${process.env.LOCAL_MODEL_PROFILE ? " (configured)" : " (auto)"}`,
@@ -254,7 +261,7 @@ async function resolveAdaptiveOllamaModel({
     }
   }
 
-  throw new Error(`Could not install any local ${label} model.`);
+  throw new Error(formatModelInstallFailure(label));
 }
 
 function rankModelCandidates(role, installedModels) {
@@ -327,17 +334,22 @@ async function ensureOllamaModel(name) {
     return true;
   }
 
+  const artifact = getModelArtifact(name);
   console.log(`Preparing ${name}. This can take a few minutes the first time...`);
-  if (await ensureOllamaModelFromArtifact(name)) {
+  if (await ensureOllamaModelFromArtifact(name, artifact)) {
     return true;
+  }
+
+  if (registryFallbackDisabled) {
+    console.warn(formatRegistryFallbackDisabledMessage(name, artifact));
+    return false;
   }
 
   console.log(`Pulling ${name} from Ollama...`);
   return runOptional(`Pulling ${name}`, "ollama", ["pull", name]);
 }
 
-async function ensureOllamaModelFromArtifact(name) {
-  const artifact = getModelArtifact(name);
+async function ensureOllamaModelFromArtifact(name, artifact = getModelArtifact(name)) {
   let hasArtifact = fs.existsSync(artifact.path);
 
   if (!hasArtifact && artifact.url) {
@@ -391,6 +403,30 @@ async function ensureOllamaModelFromArtifact(name) {
   });
 }
 
+function formatRegistryFallbackDisabledMessage(name, artifact) {
+  const mirrorMessage = modelMirrorBaseUrl
+    ? `or upload ${artifact.remotePath} to ${modelMirrorBaseUrl}`
+    : "or configure OLLAMA_MODEL_MIRROR_BASE_URL";
+  return [
+    `Skipping ollama pull for ${name} because registry fallback is disabled.`,
+    `Put the artifact at ${artifact.path}, ${mirrorMessage}.`,
+    "Set OLLAMA_DISABLE_REGISTRY_FALLBACK=0 to allow pulling from Ollama for this run.",
+  ].join(" ");
+}
+
+function formatModelInstallFailure(label) {
+  if (!registryFallbackDisabled) {
+    return `Could not install any local ${label} model.`;
+  }
+
+  const mirror = modelMirrorBaseUrl || "the configured model mirror";
+  return [
+    `Could not install any local ${label} model from installed Ollama models, local GGUF artifacts, or ${mirror}.`,
+    "Registry fallback is disabled to support corporate networks.",
+    "Upload the missing GGUF artifacts to the mirror or set OLLAMA_DISABLE_REGISTRY_FALLBACK=0 to allow ollama pull.",
+  ].join(" ");
+}
+
 function getModelArtifact(name) {
   const configured = getConfiguredModelArtifact(name);
   const fileName =
@@ -420,6 +456,7 @@ function getModelArtifact(name) {
 
   return {
     path: localPath,
+    remotePath,
     url,
     manifestUrl,
     sha256: normalizeSha256(configured.sha256),
@@ -729,6 +766,22 @@ function normalizeSha256(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value.trim())
     ? value.trim().toLowerCase()
     : "";
+}
+
+function parseBoolean(value, fallback) {
+  if (typeof value !== "string" || !value.trim()) {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function parsePositiveInteger(value, fallback) {

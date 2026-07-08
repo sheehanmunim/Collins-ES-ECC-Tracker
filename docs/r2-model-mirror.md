@@ -2,8 +2,13 @@
 
 Use this when `ollama pull` works for the maintainer but fails on corporate
 networks. The maintainer uploads GGUF model artifacts to Cloudflare R2 once, and
-fresh clones download from the approved R2/custom-domain URL before falling back
-to Ollama.
+fresh clones download from the approved R2/custom-domain URL without contacting
+Ollama's public model registry.
+
+This repo disables Ollama registry fallback by default, so corporate laptops
+will only use installed Ollama models, local GGUF artifacts, or the configured
+R2/custom-domain mirror. Set `OLLAMA_DISABLE_REGISTRY_FALLBACK=0` only on
+maintainer machines that are allowed to run `ollama pull`.
 
 ## 1. Prepare The GGUF Artifact
 
@@ -11,6 +16,7 @@ Put the model file where the launcher expects it:
 
 ```bash
 .cache/ollama-models/qwen3.5-4b.gguf
+.cache/ollama-models/gemma3-4b.gguf
 ```
 
 The configured artifact names live in [`config/local-models.json`](../config/local-models.json).
