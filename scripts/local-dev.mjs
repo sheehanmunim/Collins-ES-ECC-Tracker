@@ -7,6 +7,7 @@ import http from "node:http";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
@@ -59,6 +60,7 @@ const npmCommand = process.env.npm_execpath
     ? "npm.cmd"
     : "npm";
 const npmArgsPrefix = process.env.npm_execpath ? [process.env.npm_execpath] : [];
+let browserDownloaderPromptShown = false;
 
 main().catch((error) => {
   console.error(`\nLocal startup failed: ${error.message}`);
@@ -272,6 +274,14 @@ async function resolveAdaptiveOllamaModel({
     }
   }
 
+  if (await promptForBrowserModelDownload(label)) {
+    for (const candidate of candidates) {
+      if (await ensureOllamaModel(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
   throw new Error(formatModelInstallFailure(label));
 }
 
@@ -474,6 +484,70 @@ function formatModelInstallFailure(label) {
     );
   }
   return parts.join(" ");
+}
+
+async function promptForBrowserModelDownload(label) {
+  if (
+    browserDownloaderPromptShown ||
+    !registryFallbackDisabled ||
+    !modelMirrorBrowserDownloaderUrl ||
+    !process.stdin.isTTY ||
+    process.env.CI
+  ) {
+    return false;
+  }
+
+  browserDownloaderPromptShown = true;
+  console.warn(
+    [
+      "",
+      "Command-line model downloads are blocked, but Chrome/Edge may still be allowed.",
+      `Opening browser downloader: ${modelMirrorBrowserDownloaderUrl}`,
+      `Select this repo folder when prompted: ${root}`,
+      "When the browser page says Done, return here and press Enter to retry model setup.",
+    ].join("\n"),
+  );
+  openUrlInDefaultBrowser(modelMirrorBrowserDownloaderUrl);
+  await waitForEnter(`Press Enter after the browser downloader finishes ${label} models...`);
+  return true;
+}
+
+function openUrlInDefaultBrowser(url) {
+  const command =
+    process.platform === "win32"
+      ? "cmd.exe"
+      : process.platform === "darwin"
+        ? "open"
+        : "xdg-open";
+  const args =
+    process.platform === "win32"
+      ? ["/c", "start", "", url]
+      : [url];
+
+  try {
+    const child = spawn(command, args, {
+      cwd: root,
+      detached: true,
+      shell: false,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+  } catch (error) {
+    console.warn(`Could not open browser automatically: ${error.message}`);
+  }
+}
+
+async function waitForEnter(message) {
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    await readline.question(`${message}\n`);
+  } finally {
+    readline.close();
+  }
 }
 
 function getModelArtifact(name) {

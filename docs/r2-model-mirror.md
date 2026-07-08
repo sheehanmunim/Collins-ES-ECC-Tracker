@@ -140,4 +140,6 @@ Open that page in Chrome or Edge, select the cloned `local-cr-tracker` folder,
 and wait for it to save the configured artifacts into
 `.cache/ollama-models`. Then rerun `npm run local`. The launcher will validate
 and import those local GGUF files without downloading them through a blocked
-command-line process.
+command-line process. In an interactive terminal, the launcher can also open
+this downloader automatically after command-line mirror downloads fail, then
+retry model setup after you press Enter.
