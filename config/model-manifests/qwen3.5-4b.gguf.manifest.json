@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "fileName": "qwen3.5-4b.gguf",
+  "size": 3389971840,
+  "sha256": "81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490",
+  "parts": [
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0000",
+      "size": 268435456,
+      "sha256": "ce4beb83e0f1d50519f1a7d6014e6593b99dc76c57e2d1c8cada5748bab53f9d"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0001",
+      "size": 268435456,
+      "sha256": "fe07dcf87f5f8b7c7f2a7a16eeb8e1058ccb96d947bbf0669fba0ae6c35fb96b"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0002",
+      "size": 268435456,
+      "sha256": "4df136a92c5e403a7b76c6b81a6d736406842219a1d966eb8af80c849efc2a7e"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0003",
+      "size": 268435456,
+      "sha256": "55c0fb5e949b0c637c7cd1fb1f5d15bffcf9cdbf28e580d719e7ef0cd5105a8a"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0004",
+      "size": 268435456,
+      "sha256": "c08b8da0cd32c1a9caf9379e315bb5ccf967fc7752e75b0657d9fbffefcfbbd6"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0005",
+      "size": 268435456,
+      "sha256": "fccf2d04001a2efdb557bbf1a6385c66f1137a155eff6e75076b88ee36f9e8dc"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0006",
+      "size": 268435456,
+      "sha256": "f076e6a664b07e0542cad6e0b039ed028c26ed739dc55582a294559bca1f3f7c"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0007",
+      "size": 268435456,
+      "sha256": "2e99859c9ac6c71843076b6cc55837d0bde1d34ef4f880c1598afd3c8e96a3af"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0008",
+      "size": 268435456,
+      "sha256": "f372d386452eb315175596fe89eff7aa8ec26150e2567c8dcb8f34da14b2b6db"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0009",
+      "size": 268435456,
+      "sha256": "f253dd74b67fe1b0905f4de486dedd220d90093cb2f1b591c8b32ad906d4c264"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0010",
+      "size": 268435456,
+      "sha256": "975c573608d3ec701e7d549ac02a63a7287652671b45d04df4bf38d7569640cc"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0011",
+      "size": 268435456,
+      "sha256": "03346202433c04483c81868784dc2143abb1449ef88ca7222bc6695c3f114099"
+    },
+    {
+      "path": "qwen3.5-4b.gguf.parts/part-0012",
+      "size": 168746368,
+      "sha256": "2fd96c03dcccf70859689e45d35c18dc6e4b17cc731cce710124e65fe18f2762"
+    }
+  ]
+}

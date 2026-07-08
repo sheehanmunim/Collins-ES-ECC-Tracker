@@ -111,12 +111,14 @@ for corporate distribution.
 ## Corporate Network Troubleshooting
 
 Fresh clones use `https://models.fourechelon.com/ecc` by default. If startup
-fails while downloading mirrored artifacts, first confirm the laptop can reach
-the small manifests:
+uses committed chunk manifests from `config/model-manifests/` so it does not
+need to fetch `.manifest.json` files over the corporate network. If startup
+fails while downloading mirrored artifacts, first confirm the laptop can reach a
+model chunk:
 
 ```powershell
-curl.exe -I https://models.fourechelon.com/ecc/qwen3.5-4b.gguf.manifest.json
-curl.exe -I https://models.fourechelon.com/ecc/gemma3-4b.gguf.manifest.json
+curl.exe -I https://models.fourechelon.com/ecc/qwen3.5-4b.gguf.parts/part-0000
+curl.exe -I https://models.fourechelon.com/ecc/gemma3-4b.gguf.parts/part-0000
 ```
 
 The launcher tries Node's built-in HTTPS client first, then retries mirror

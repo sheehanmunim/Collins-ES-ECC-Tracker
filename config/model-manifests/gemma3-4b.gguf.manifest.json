@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "fileName": "gemma3-4b.gguf",
+  "size": 3338792448,
+  "sha256": "aeda25e63ebd698fab8638ffb778e68bed908b960d39d0becc650fa981609d25",
+  "parts": [
+    {
+      "path": "gemma3-4b.gguf.parts/part-0000",
+      "size": 268435456,
+      "sha256": "e1c2ad4f1fede94c95daec32eca6cf02128aed8df6f5a673a502263a83b76d40"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0001",
+      "size": 268435456,
+      "sha256": "5739b8af6ccc969523cb3acb7486bb3790b98feff2c4e6d2f857eb34295ed44e"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0002",
+      "size": 268435456,
+      "sha256": "e8a53b7c32e50e48f77cfd81b6eaf9ae75bb5f26676a2a4e6c1e3d502f6c46c1"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0003",
+      "size": 268435456,
+      "sha256": "a7be7d0ebbb836c00f92e0248a6542a9e02d4fdb668208e58142d2736f6183ca"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0004",
+      "size": 268435456,
+      "sha256": "5dbd301263ed9a6aa8e031cf2ea62b167d9486c28efaa20024bd92f90fb888c3"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0005",
+      "size": 268435456,
+      "sha256": "760e3e55700f6b97c7633732a85f88b3be285d9295db68802be25ffe60860d0e"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0006",
+      "size": 268435456,
+      "sha256": "b172b47aa303a7c8421dfc7fa22b53237d5997ac24951ea1fb895d7c93d182f0"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0007",
+      "size": 268435456,
+      "sha256": "f923c8be7faee52834d40920be7f550a9b2118eae9af1f571e95eb6c996aba2c"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0008",
+      "size": 268435456,
+      "sha256": "6c9686e3c5c746d7c3955521edf0bd8e391a6d11fbaec075b083d8f8645e8129"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0009",
+      "size": 268435456,
+      "sha256": "85dc9ae559079a9517053fd937e6631012cb523fed97d986d4460e3b95fe9d4d"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0010",
+      "size": 268435456,
+      "sha256": "aa1aa268b7b31e165f853d4cd7a0881c3c3b1ae27d0c9103cf6c031554be5610"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0011",
+      "size": 268435456,
+      "sha256": "03e4dcd091481539c2554f6591cd984c3b201301b45a4058ab6c9ff96e22f79a"
+    },
+    {
+      "path": "gemma3-4b.gguf.parts/part-0012",
+      "size": 117566976,
+      "sha256": "7b404c66a9797f81816f016c64317525c74ad5b12174ffde920934229a0ccaed"
+    }
+  ]
+}

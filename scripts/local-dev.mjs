@@ -484,12 +484,17 @@ function getModelArtifact(name) {
       : url
         ? `${url}.manifest.json`
         : "";
+  const manifestPath =
+    typeof configured.manifestPath === "string" && configured.manifestPath.trim()
+      ? resolveWorkspacePath(configured.manifestPath.trim())
+      : "";
 
   return {
     path: localPath,
     remotePath,
     url,
     manifestUrl,
+    manifestPath,
     preferManifest: Boolean(configured.preferManifest),
     sha256: normalizeSha256(configured.sha256),
     modelfile: normalizeModelfileLines(configured.modelfile),
@@ -541,7 +546,7 @@ function normalizeModelfileLines(value) {
 }
 
 async function downloadChunkedArtifact(artifact) {
-  const manifest = await requestJson(artifact.manifestUrl);
+  const manifest = await readArtifactManifest(artifact);
   if (!manifest || !Array.isArray(manifest.parts) || manifest.parts.length === 0) {
     throw new Error("Chunk manifest did not include any parts");
   }
@@ -586,6 +591,20 @@ async function downloadChunkedArtifact(artifact) {
   await concatenateFiles(partPaths, tempArtifactPath);
   fs.renameSync(tempArtifactPath, artifact.path);
   fs.rmSync(tempDir, { recursive: true, force: true });
+}
+
+async function readArtifactManifest(artifact) {
+  if (artifact.manifestPath) {
+    try {
+      return JSON.parse(fs.readFileSync(artifact.manifestPath, "utf8"));
+    } catch (error) {
+      console.warn(
+        `Local chunk manifest ${artifact.manifestPath} could not be read: ${formatErrorMessage(error)}`,
+      );
+    }
+  }
+
+  return await requestJson(artifact.manifestUrl);
 }
 
 function resolveManifestPartUrl(part, manifestBaseUrl) {
@@ -824,6 +843,7 @@ function shouldUseCurlFallback(url, error) {
   const message = formatErrorMessage(error);
   return (
     message.includes("socket hang up") ||
+    (message.includes("HTTP 403") && isMirrorUrl(url)) ||
     message.includes("ECONNRESET") ||
     message.includes("ETIMEDOUT") ||
     message.includes("Request timed out") ||
@@ -831,6 +851,10 @@ function shouldUseCurlFallback(url, error) {
     message.includes("unable to verify") ||
     message.includes("certificate")
   );
+}
+
+function isMirrorUrl(url) {
+  return Boolean(modelMirrorBaseUrl && url.startsWith(`${modelMirrorBaseUrl}/`));
 }
 
 function runCurl(args, options = {}) {
