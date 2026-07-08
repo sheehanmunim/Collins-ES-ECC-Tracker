@@ -1038,11 +1038,12 @@ async function downloadFileWithBrowser(url, targetPath, originalError) {
 
   const targetDir = path.dirname(targetPath);
   const fileName = path.basename(targetPath);
-  const profileDir = `${targetPath}.browser-profile`;
+  const profileDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "local-cr-tracker-browser-"),
+  );
   fs.mkdirSync(targetDir, { recursive: true });
   fs.rmSync(targetPath, { force: true });
   fs.rmSync(`${targetPath}.crdownload`, { force: true });
-  fs.rmSync(profileDir, { recursive: true, force: true });
   writeBrowserDownloadPreferences(profileDir, targetDir);
 
   console.log(`Retrying download through browser: ${url}`);
@@ -1073,7 +1074,8 @@ async function downloadFileWithBrowser(url, targetPath, originalError) {
     );
   } finally {
     stopBrowserProcess(child);
-    fs.rmSync(profileDir, { recursive: true, force: true });
+    await sleep(500);
+    removePathBestEffort(profileDir, { recursive: true });
   }
 }
 
@@ -1218,6 +1220,21 @@ function moveFileSync(sourcePath, targetPath) {
     }
     fs.copyFileSync(sourcePath, targetPath);
     fs.rmSync(sourcePath, { force: true });
+  }
+}
+
+function removePathBestEffort(targetPath, options = {}) {
+  try {
+    fs.rmSync(targetPath, {
+      force: true,
+      maxRetries: 5,
+      recursive: Boolean(options.recursive),
+      retryDelay: 500,
+    });
+  } catch (error) {
+    console.warn(
+      `Could not clean up temporary browser files at ${targetPath}: ${error.message}`,
+    );
   }
 }
 
