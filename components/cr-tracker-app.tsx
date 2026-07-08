@@ -356,12 +356,19 @@ type WorkflowTask = {
   field: TaskStateField;
   state: TaskState;
   requirements?: string[];
+  examples?: WorkflowExample[];
 };
 
 type WorkflowDefinitionTask = {
   label: string;
   field: TaskStateField;
   requirements?: string[];
+  examples?: WorkflowExample[];
+};
+
+type WorkflowExample = {
+  label: string;
+  src: string;
 };
 
 type WorkflowPhase = {
@@ -603,6 +610,109 @@ const cmWorkingListRequirements = [
   "CR submitted to workflow; note CS/CM queue",
   "Tracker rows copied into Friday CM email",
 ];
+const workflowExampleBasePath = "/workflow-examples";
+const msEccOocExamples: WorkflowExample[] = [
+  {
+    label: "OOC request email",
+    src: `${workflowExampleBasePath}/ooc-request-email.png`,
+  },
+  {
+    label: "OOC approval thread",
+    src: `${workflowExampleBasePath}/ooc-approval-thread.png`,
+  },
+];
+const msEccNcdocExamples: WorkflowExample[] = [
+  {
+    label: "MS ECC checklist form",
+    src: `${workflowExampleBasePath}/ms-ecc-checklist-form.png`,
+  },
+  {
+    label: "Prepared PDFs folder",
+    src: `${workflowExampleBasePath}/ms-ecc-pdfs-folder.png`,
+  },
+  {
+    label: "PLM document tiles",
+    src: `${workflowExampleBasePath}/plm-document-tiles.png`,
+  },
+  {
+    label: "Document type picker",
+    src: `${workflowExampleBasePath}/plm-add-document-type.png`,
+  },
+  {
+    label: "Attachment details",
+    src: `${workflowExampleBasePath}/ncdoc-attachment-details.png`,
+  },
+  {
+    label: "Document references",
+    src: `${workflowExampleBasePath}/ncdoc-document-references.png`,
+  },
+  {
+    label: "Control references",
+    src: `${workflowExampleBasePath}/ncdoc-control-references.png`,
+  },
+  {
+    label: "Folder location",
+    src: `${workflowExampleBasePath}/ncdoc-folder-location.png`,
+  },
+  {
+    label: "Related documents",
+    src: `${workflowExampleBasePath}/ncdoc-related-documents.png`,
+  },
+];
+const msEccXclassExamples: WorkflowExample[] = [
+  {
+    label: "Required attachments",
+    src: `${workflowExampleBasePath}/xclass-required-attachments.png`,
+  },
+  {
+    label: "xClass Other 1",
+    src: `${workflowExampleBasePath}/xclass-other-1.png`,
+  },
+  {
+    label: "xClass add panel",
+    src: `${workflowExampleBasePath}/xclass-add-panel.png`,
+  },
+  {
+    label: "Attachment page",
+    src: `${workflowExampleBasePath}/xclass-attachment-page.png`,
+  },
+  {
+    label: "Classification upload",
+    src: `${workflowExampleBasePath}/classification-upload-form.png`,
+  },
+  {
+    label: "Classification request",
+    src: `${workflowExampleBasePath}/classification-request-form.png`,
+  },
+];
+const msEccClosureExamples: WorkflowExample[] = [
+  {
+    label: "Closeout email draft",
+    src: `${workflowExampleBasePath}/closeout-email-draft.png`,
+  },
+  {
+    label: "Closeout email sent",
+    src: `${workflowExampleBasePath}/closeout-email-sent.png`,
+  },
+  {
+    label: "Closeout response",
+    src: `${workflowExampleBasePath}/closeout-response-email.png`,
+  },
+];
+const cmWorkingListExamples: WorkflowExample[] = [
+  {
+    label: "Tracker row",
+    src: `${workflowExampleBasePath}/cm-tracker-row.png`,
+  },
+  {
+    label: "CM queue note",
+    src: `${workflowExampleBasePath}/cm-workflow-queue-note.png`,
+  },
+  {
+    label: "Friday CM email table",
+    src: `${workflowExampleBasePath}/friday-cm-email-table.png`,
+  },
+];
 
 const statusTone: Record<CrStatus, string> = {
   Intake: "border-gray-200 bg-gray-50 text-gray-700",
@@ -817,6 +927,7 @@ const workflowPhaseDefinitions: Array<{
         label: "CM List",
         field: "cmWorkingListStatus",
         requirements: cmWorkingListRequirements,
+        examples: cmWorkingListExamples,
       },
     ],
   },
@@ -5092,9 +5203,10 @@ function WorkflowTaskChecklistRow({
   onStateChange: (state: TaskState) => void;
 }) {
   const isComplete = task.state === "Complete";
+  const inputId = `workflow-task-${task.field}`;
 
   return (
-    <label
+    <div
       className={cn(
         "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 border px-2 py-2 text-xs transition",
         isComplete
@@ -5104,6 +5216,7 @@ function WorkflowTaskChecklistRow({
       )}
     >
       <input
+        id={inputId}
         type="checkbox"
         checked={isComplete}
         disabled={disabled}
@@ -5113,13 +5226,16 @@ function WorkflowTaskChecklistRow({
         className="h-4 w-4 shrink-0 accent-emerald-600"
         aria-label={`${task.label} complete`}
       />
-      <div
-        className={cn(
-          "min-w-0 whitespace-normal break-words font-medium leading-5",
-          isComplete && "text-slate-400 line-through",
-        )}
-      >
-        <span>{task.label}</span>
+      <div className="min-w-0 whitespace-normal break-words font-medium leading-5">
+        <label
+          htmlFor={inputId}
+          className={cn(
+            "cursor-pointer",
+            isComplete && "text-slate-400 line-through",
+          )}
+        >
+          {task.label}
+        </label>
         {task.requirements?.length ? (
           <ul className="mt-1 space-y-0.5 text-[11px] font-normal leading-4 text-slate-500">
             {task.requirements.map((requirement) => (
@@ -5147,6 +5263,35 @@ function WorkflowTaskChecklistRow({
             ))}
           </ul>
         ) : null}
+        {task.examples?.length ? (
+          <details className="mt-2 border border-slate-200 bg-slate-50 text-slate-700">
+            <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-semibold">
+              Screenshot examples
+            </summary>
+            <div className="grid gap-2 border-t border-slate-200 p-2">
+              {task.examples.map((example) => (
+                <a
+                  key={example.src}
+                  href={example.src}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block overflow-hidden border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                >
+                  <Image
+                    src={example.src}
+                    alt={example.label}
+                    width={220}
+                    height={132}
+                    className="h-20 w-full object-cover object-top"
+                  />
+                  <span className="block px-2 py-1 text-[11px] font-medium leading-4">
+                    {example.label}
+                  </span>
+                </a>
+              ))}
+            </div>
+          </details>
+        ) : null}
       </div>
       <span className="min-w-fit max-w-[104px] shrink-0 text-right leading-5">
         {saving ? (
@@ -5164,7 +5309,7 @@ function WorkflowTaskChecklistRow({
           </span>
         )}
       </span>
-    </label>
+    </div>
   );
 }
 
@@ -6433,6 +6578,7 @@ function buildWorkflowPhases(cr: Cr): WorkflowPhase[] {
       label: task.label,
       field: task.field,
       requirements: task.requirements,
+      examples: task.examples,
       state: getWorkflowTaskState(cr, task.field),
     }));
     const blocked =
@@ -6543,12 +6689,21 @@ function getWorkflowDefinitionTasks(
     return definition.tasks;
   }
 
+  if (definition.id === "actions-ooc") {
+    return definition.tasks.map((task) =>
+      task.field === "oocApprovalStatus"
+        ? { ...task, examples: msEccOocExamples }
+        : task,
+    );
+  }
+
   if (definition.id === "ncdoc") {
     return [
       {
         label: "NCDOC",
         field: "ncdocStatus",
         requirements: getMsEccNcdocRequirements(cr),
+        examples: msEccNcdocExamples,
       },
     ];
   }
@@ -6559,6 +6714,7 @@ function getWorkflowDefinitionTasks(
         label: "xClass",
         field: "xclassStatus",
         requirements: msEccXclassRequirements,
+        examples: msEccXclassExamples,
       },
     ];
   }
@@ -6573,6 +6729,7 @@ function getWorkflowDefinitionTasks(
         label: "MS ECC Closeout",
         field: "closureNotificationStatus",
         requirements: msEccClosureRequirements,
+        examples: msEccClosureExamples,
       },
     ];
   }
