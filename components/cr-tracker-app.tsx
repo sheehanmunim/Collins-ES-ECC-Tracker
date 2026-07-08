@@ -8646,7 +8646,7 @@ function AssistantPanel({
                     </div>
                   ) : (
                     <div className="max-w-[86%] text-slate-900">
-                      <p className="whitespace-pre-wrap">{message.content}</p>
+                      <AssistantMarkdown content={message.content} />
                     </div>
                   )}
                 </div>
@@ -8829,6 +8829,245 @@ function AssistantPanel({
       </div>
     </section>
   );
+}
+
+type AssistantMarkdownBlock =
+  | { type: "heading"; content: string }
+  | { type: "paragraph"; content: string }
+  | { type: "ul"; items: string[] }
+  | { type: "ol"; items: string[] }
+  | { type: "checklist"; items: Array<{ checked: boolean; content: string }> };
+
+function AssistantMarkdown({ content }: { content: string }) {
+  const blocks = useMemo(() => parseAssistantMarkdown(content), [content]);
+
+  return (
+    <div className="space-y-3 text-sm leading-7 text-slate-900">
+      {blocks.map((block, index) => {
+        if (block.type === "heading") {
+          return (
+            <h3
+              key={`heading-${index}`}
+              className="text-sm font-semibold leading-6 text-slate-950"
+            >
+              {renderAssistantInlineMarkdown(block.content, `heading-${index}`)}
+            </h3>
+          );
+        }
+
+        if (block.type === "ul") {
+          return (
+            <ul
+              key={`ul-${index}`}
+              className="list-disc space-y-1 pl-5 marker:text-slate-400"
+            >
+              {block.items.map((item, itemIndex) => (
+                <li key={`ul-${index}-${itemIndex}`} className="pl-1">
+                  {renderAssistantInlineMarkdown(
+                    item,
+                    `ul-${index}-${itemIndex}`,
+                  )}
+                </li>
+              ))}
+            </ul>
+          );
+        }
+
+        if (block.type === "ol") {
+          return (
+            <ol
+              key={`ol-${index}`}
+              className="list-decimal space-y-1 pl-5 marker:text-slate-400"
+            >
+              {block.items.map((item, itemIndex) => (
+                <li key={`ol-${index}-${itemIndex}`} className="pl-1">
+                  {renderAssistantInlineMarkdown(
+                    item,
+                    `ol-${index}-${itemIndex}`,
+                  )}
+                </li>
+              ))}
+            </ol>
+          );
+        }
+
+        if (block.type === "checklist") {
+          return (
+            <ul key={`checklist-${index}`} className="space-y-1.5">
+              {block.items.map((item, itemIndex) => (
+                <li
+                  key={`checklist-${index}-${itemIndex}`}
+                  className="grid grid-cols-[auto_minmax(0,1fr)] gap-2"
+                >
+                  <span
+                    className={cn(
+                      "mt-1 flex h-3.5 w-3.5 items-center justify-center border",
+                      item.checked
+                        ? "border-emerald-600 bg-emerald-600 text-white"
+                        : "border-slate-300 bg-white",
+                    )}
+                    aria-hidden="true"
+                  >
+                    {item.checked ? <CheckCircle2 className="h-3 w-3" /> : null}
+                  </span>
+                  <span>
+                    {renderAssistantInlineMarkdown(
+                      item.content,
+                      `checklist-${index}-${itemIndex}`,
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          );
+        }
+
+        return (
+          <p key={`paragraph-${index}`} className="whitespace-normal">
+            {renderAssistantInlineMarkdown(block.content, `paragraph-${index}`)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function parseAssistantMarkdown(content: string): AssistantMarkdownBlock[] {
+  const blocks: AssistantMarkdownBlock[] = [];
+  let paragraphLines: string[] = [];
+  let activeList:
+    | { type: "ul"; items: string[] }
+    | { type: "ol"; items: string[] }
+    | { type: "checklist"; items: Array<{ checked: boolean; content: string }> }
+    | null = null;
+
+  function flushParagraph() {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+
+    blocks.push({
+      type: "paragraph",
+      content: paragraphLines.join(" ").replace(/\s+/g, " ").trim(),
+    });
+    paragraphLines = [];
+  }
+
+  function flushList() {
+    if (!activeList) {
+      return;
+    }
+
+    blocks.push(activeList);
+    activeList = null;
+  }
+
+  content
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .forEach((rawLine) => {
+      const line = rawLine.trim();
+
+      if (!line) {
+        flushParagraph();
+        flushList();
+        return;
+      }
+
+      const headingMatch = line.match(/^#{1,3}\s+(.+)$/);
+      if (headingMatch) {
+        flushParagraph();
+        flushList();
+        blocks.push({ type: "heading", content: headingMatch[1] });
+        return;
+      }
+
+      const checklistMatch = line.match(/^[-*]\s+\[([ xX])\]\s+(.+)$/);
+      if (checklistMatch) {
+        flushParagraph();
+        if (activeList?.type !== "checklist") {
+          flushList();
+          activeList = { type: "checklist", items: [] };
+        }
+        activeList.items.push({
+          checked: checklistMatch[1].toLowerCase() === "x",
+          content: checklistMatch[2],
+        });
+        return;
+      }
+
+      const unorderedMatch = line.match(/^[-*]\s+(.+)$/);
+      if (unorderedMatch) {
+        flushParagraph();
+        if (activeList?.type !== "ul") {
+          flushList();
+          activeList = { type: "ul", items: [] };
+        }
+        activeList.items.push(unorderedMatch[1]);
+        return;
+      }
+
+      const orderedMatch = line.match(/^\d+[.)]\s+(.+)$/);
+      if (orderedMatch) {
+        flushParagraph();
+        if (activeList?.type !== "ol") {
+          flushList();
+          activeList = { type: "ol", items: [] };
+        }
+        activeList.items.push(orderedMatch[1]);
+        return;
+      }
+
+      flushList();
+      paragraphLines.push(line);
+    });
+
+  flushParagraph();
+  flushList();
+
+  return blocks.length > 0 ? blocks : [{ type: "paragraph", content }];
+}
+
+function renderAssistantInlineMarkdown(text: string, keyPrefix: string) {
+  const nodes: ReactNode[] = [];
+  const pattern = /(\*\*[^*]+?\*\*|`[^`]+?`)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+
+    const token = match[0];
+    if (token.startsWith("**")) {
+      nodes.push(
+        <strong
+          key={`${keyPrefix}-strong-${match.index}`}
+          className="font-semibold text-slate-950"
+        >
+          {token.slice(2, -2)}
+        </strong>,
+      );
+    } else {
+      nodes.push(
+        <code
+          key={`${keyPrefix}-code-${match.index}`}
+          className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.92em] text-slate-800"
+        >
+          {token.slice(1, -1)}
+        </code>,
+      );
+    }
+
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
 }
 
 function AssistantHistoryPanel({

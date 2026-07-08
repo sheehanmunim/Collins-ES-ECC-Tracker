@@ -321,6 +321,7 @@ export async function POST(request: Request) {
       ? "Use only the CR data provided in the JSON context. If the data does not answer the question, say what is missing."
       : "If the user is making casual conversation or asking a general question, answer normally and briefly.",
     "Be concise, practical, and specific. Mention CR numbers when making claims.",
+    "Format readable responses in Markdown: use short paragraphs, **bold** labels sparingly, and real bullet or numbered lists with blank lines between sections. Do not output raw checklist text unless the user asks for a literal template.",
     "Keep a professional tone and do not use emojis.",
     isVoiceMode
       ? "The user is in live voice mode. Answer conversationally in 1 to 3 short sentences unless they ask for detail."
