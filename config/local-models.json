@@ -5,6 +5,7 @@
   "artifacts": {
     "qwen3.5:4b": {
       "fileName": "qwen3.5-4b.gguf",
+      "preferManifest": true,
       "modelfile": [
         "TEMPLATE {{ .Prompt }}",
         "RENDERER qwen3.5",
@@ -18,6 +19,7 @@
     },
     "gemma3:4b": {
       "fileName": "gemma3-4b.gguf",
+      "preferManifest": true,
       "modelfile": [
         "TEMPLATE \"\"\"{{- range $i, $_ := .Messages }}",
         "{{- $last := eq (len (slice $.Messages $i)) 1 }}",

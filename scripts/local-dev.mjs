@@ -244,7 +244,12 @@ async function resolveAdaptiveOllamaModel({
 
   const installedModels = await getOllamaModels();
   const rankedCandidates = rankModelCandidates(role, installedModels);
-  const candidates = unique([...rankedCandidates, requestedName, ...fallbackNames]);
+  let candidates = unique([...rankedCandidates, requestedName, ...fallbackNames]);
+  if (registryFallbackDisabled) {
+    candidates = candidates.filter((candidate) =>
+      canInstallWithoutRegistry(candidate, installedModels),
+    );
+  }
   console.log(
     `Adaptive ${label} candidates: ${previewCandidateList(candidates)}.`,
   );
@@ -327,6 +332,18 @@ function previewCandidateList(candidates) {
   return candidates.length > 4 ? `${preview}, ...` : preview;
 }
 
+function canInstallWithoutRegistry(name, installedModels) {
+  return (
+    installedModels.includes(name) ||
+    hasConfiguredModelArtifact(name) ||
+    fs.existsSync(getModelArtifact(name).path)
+  );
+}
+
+function hasConfiguredModelArtifact(name) {
+  return Boolean(modelConfig.artifacts?.[name]);
+}
+
 async function ensureOllamaModel(name) {
   const models = await getOllamaModels();
   if (models.includes(name)) {
@@ -352,28 +369,16 @@ async function ensureOllamaModel(name) {
 async function ensureOllamaModelFromArtifact(name, artifact = getModelArtifact(name)) {
   let hasArtifact = fs.existsSync(artifact.path);
 
-  if (!hasArtifact && artifact.url) {
-    console.log(`Downloading mirrored model artifact for ${name}...`);
-    try {
-      await downloadFile(artifact.url, artifact.path);
-      hasArtifact = true;
-    } catch (error) {
-      console.warn(
-        `Mirror download for ${name} failed: ${formatErrorMessage(error)}`,
-      );
-    }
+  if (!hasArtifact && artifact.preferManifest && artifact.manifestUrl) {
+    hasArtifact = await tryDownloadChunkedModelArtifact(name, artifact);
   }
 
-  if (!hasArtifact && artifact.manifestUrl) {
-    console.log(`Downloading chunked mirrored model artifact for ${name}...`);
-    try {
-      await downloadChunkedArtifact(artifact);
-      hasArtifact = true;
-    } catch (error) {
-      console.warn(
-        `Chunked mirror download for ${name} failed: ${formatErrorMessage(error)}`,
-      );
-    }
+  if (!hasArtifact && artifact.url) {
+    hasArtifact = await tryDownloadModelArtifact(name, artifact);
+  }
+
+  if (!hasArtifact && !artifact.preferManifest && artifact.manifestUrl) {
+    hasArtifact = await tryDownloadChunkedModelArtifact(name, artifact);
   }
 
   if (!hasArtifact) {
@@ -401,6 +406,32 @@ async function ensureOllamaModelFromArtifact(name, artifact = getModelArtifact(n
   ], {
     cwd: path.dirname(artifact.path),
   });
+}
+
+async function tryDownloadModelArtifact(name, artifact) {
+  console.log(`Downloading mirrored model artifact for ${name}...`);
+  try {
+    await downloadFile(artifact.url, artifact.path);
+    return true;
+  } catch (error) {
+    console.warn(
+      `Mirror download for ${name} failed: ${formatErrorMessage(error)}`,
+    );
+    return false;
+  }
+}
+
+async function tryDownloadChunkedModelArtifact(name, artifact) {
+  console.log(`Downloading chunked mirrored model artifact for ${name}...`);
+  try {
+    await downloadChunkedArtifact(artifact);
+    return true;
+  } catch (error) {
+    console.warn(
+      `Chunked mirror download for ${name} failed: ${formatErrorMessage(error)}`,
+    );
+    return false;
+  }
 }
 
 function formatRegistryFallbackDisabledMessage(name, artifact) {
@@ -459,6 +490,7 @@ function getModelArtifact(name) {
     remotePath,
     url,
     manifestUrl,
+    preferManifest: Boolean(configured.preferManifest),
     sha256: normalizeSha256(configured.sha256),
     modelfile: normalizeModelfileLines(configured.modelfile),
   };
@@ -607,7 +639,18 @@ async function getOllamaModels() {
     : [];
 }
 
-function requestJson(url) {
+async function requestJson(url) {
+  try {
+    return await requestJsonDirect(url);
+  } catch (error) {
+    if (!shouldUseCurlFallback(url, error)) {
+      throw error;
+    }
+    return await requestJsonWithCurl(url, error);
+  }
+}
+
+function requestJsonDirect(url) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "https:" ? https : http;
@@ -637,7 +680,37 @@ function requestJson(url) {
   });
 }
 
-function downloadFile(url, targetPath, redirectCount = 0) {
+async function requestJsonWithCurl(url, originalError) {
+  const result = runCurl(["--fail", "--silent", "--show-error", "--location", url], {
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+
+  if (result.status !== 0) {
+    throw new Error(
+      `${formatErrorMessage(originalError)}; curl fallback failed: ${formatCurlError(result)}`,
+    );
+  }
+
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(`curl fallback returned invalid JSON: ${formatErrorMessage(error)}`);
+  }
+}
+
+async function downloadFile(url, targetPath, redirectCount = 0) {
+  try {
+    return await downloadFileDirect(url, targetPath, redirectCount);
+  } catch (error) {
+    if (!shouldUseCurlFallback(url, error)) {
+      throw error;
+    }
+    await downloadFileWithCurl(url, targetPath, error);
+  }
+}
+
+function downloadFileDirect(url, targetPath, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     if (redirectCount > 5) {
       reject(new Error("Too many redirects"));
@@ -655,7 +728,7 @@ function downloadFile(url, targetPath, redirectCount = 0) {
       const location = response.headers.location;
       if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
         response.resume();
-        downloadFile(new URL(location, parsedUrl).toString(), targetPath, redirectCount + 1)
+        downloadFileDirect(new URL(location, parsedUrl).toString(), targetPath, redirectCount + 1)
           .then(resolve)
           .catch(reject);
         return;
@@ -706,6 +779,77 @@ function downloadFile(url, targetPath, redirectCount = 0) {
       request.destroy(new Error("Download timed out"));
     });
   });
+}
+
+async function downloadFileWithCurl(url, targetPath, originalError) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  const tempPath = `${targetPath}.download`;
+  fs.rmSync(tempPath, { force: true });
+
+  console.log(`Retrying download through curl for ${url}...`);
+  const result = runCurl(
+    [
+      "--fail",
+      "--silent",
+      "--show-error",
+      "--location",
+      "--retry",
+      "3",
+      "--connect-timeout",
+      "30",
+      "--max-time",
+      String(Math.ceil(modelDownloadTimeoutMs / 1000)),
+      "--output",
+      tempPath,
+      url,
+    ],
+    { timeout: modelDownloadTimeoutMs },
+  );
+
+  if (result.status !== 0) {
+    fs.rmSync(tempPath, { force: true });
+    throw new Error(
+      `${formatErrorMessage(originalError)}; curl fallback failed: ${formatCurlError(result)}`,
+    );
+  }
+
+  fs.renameSync(tempPath, targetPath);
+}
+
+function shouldUseCurlFallback(url, error) {
+  if (!/^https?:\/\//i.test(url)) {
+    return false;
+  }
+
+  const message = formatErrorMessage(error);
+  return (
+    message.includes("socket hang up") ||
+    message.includes("ECONNRESET") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("Request timed out") ||
+    message.includes("self signed certificate") ||
+    message.includes("unable to verify") ||
+    message.includes("certificate")
+  );
+}
+
+function runCurl(args, options = {}) {
+  const command = process.platform === "win32" ? "curl.exe" : "curl";
+  return spawnSync(command, args, {
+    cwd: root,
+    encoding: options.encoding ?? "utf8",
+    env: process.env,
+    shell: false,
+    timeout: options.timeout ?? 60_000,
+  });
+}
+
+function formatCurlError(result) {
+  if (result.error) {
+    return result.error.message;
+  }
+  const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
+  return stderr || `curl exited with status ${result.status}`;
 }
 
 function sha256File(filePath) {

@@ -107,3 +107,18 @@ npm run models:r2 -- --bucket ecc-local-models --dev-url --prefix ecc
 Cloudflare's `r2.dev` public URL is intended for non-production traffic, is
 rate-limited, and can be blocked by corporate DNS policy. Use the custom domain
 for corporate distribution.
+
+## Corporate Network Troubleshooting
+
+Fresh clones use `https://models.fourechelon.com/ecc` by default. If startup
+fails while downloading mirrored artifacts, first confirm the laptop can reach
+the small manifests:
+
+```powershell
+curl.exe -I https://models.fourechelon.com/ecc/qwen3.5-4b.gguf.manifest.json
+curl.exe -I https://models.fourechelon.com/ecc/gemma3-4b.gguf.manifest.json
+```
+
+The launcher tries Node's built-in HTTPS client first, then retries mirror
+downloads through `curl` so corporate proxy settings and TLS inspection paths
+have a better chance of being honored.
