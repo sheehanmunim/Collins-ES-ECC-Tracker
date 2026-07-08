@@ -195,6 +195,7 @@ Git tracks the app source, scripts, docs, and committed model mirror config. It
 does not track machine-local runtime state:
 
 - CR data and local Convex database state live under `.convex/`.
+- generated Convex bindings live under `convex/_generated/`.
 - local environment values live in `.env.local`.
 - downloaded GGUF model files live under `.cache/ollama-models/`.
 - generated assistant skill bundles live under `.agents/` and `.claude/`.
@@ -202,12 +203,12 @@ does not track machine-local runtime state:
 That means a user can pull app updates with `git pull` without replacing their
 existing local CRs, model cache, or machine-specific settings.
 
-Older clones may already have generated assistant skill files tracked. If Git
-shows only `AGENTS.md`, `CLAUDE.md`, `skills-lock.json`, `.agents/`, or
-`.claude/` as modified, discard just that generated metadata before pulling:
+Older clones may already have generated files tracked. If Git shows only
+`convex/_generated/`, `AGENTS.md`, `CLAUDE.md`, `skills-lock.json`, `.agents/`,
+or `.claude/` as modified, discard just that generated metadata before pulling:
 
 ```bash
-git restore AGENTS.md CLAUDE.md skills-lock.json .agents .claude
+git restore convex/_generated AGENTS.md CLAUDE.md skills-lock.json .agents .claude
 git pull
 ```
 

@@ -27,6 +27,7 @@
 
 # local app data and generated assistant tooling
 /.convex/
+/convex/_generated/
 /.agents/
 /.claude/
 /.cursor/

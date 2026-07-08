@@ -8,6 +8,8 @@
     "dev": "convex dev --start \"next dev --webpack\"",
     "dev:local": "cross-env CONVEX_AGENT_MODE=anonymous convex dev --start \"next dev --webpack\"",
     "convex:local": "cross-env CONVEX_AGENT_MODE=anonymous convex dev",
+    "codegen": "convex codegen --typecheck disable",
+    "prebuild": "npm run codegen",
     "build": "next build",
     "models": "node scripts/local-dev.mjs --models-only",
     "models:r2": "node scripts/r2-model-mirror.mjs setup",
