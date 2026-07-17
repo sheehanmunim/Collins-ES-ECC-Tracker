@@ -11,14 +11,17 @@ import { createInterface } from "node:readline/promises";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import nextEnv from "@next/env";
-import { initializeSharedHub } from "./shared-hub.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(root);
 const setupOnly = process.argv.includes("--setup-only");
 const modelsOnly = process.argv.includes("--models-only");
-const sharedDataDir = process.env.ECC_SHARED_DATA_DIR?.trim() || "";
+const sharedSelection = resolveSharedSelection();
+const sharedDataDir = sharedSelection.path;
+process.env.ECC_SHARED_MODE = sharedSelection.mode;
+if (sharedDataDir) process.env.ECC_SHARED_DATA_DIR = sharedDataDir;
+else delete process.env.ECC_SHARED_DATA_DIR;
 const modelConfig = readModelConfig();
 const systemMemoryGb = os.totalmem() / 1024 ** 3;
 const modelProfileName = selectModelProfileName();
@@ -156,8 +159,7 @@ async function main() {
   writePrivateLocalEnv(readPrivateLocalConfig());
 
   if (sharedDataDir && setupOnly) {
-    const shared = initializeSharedHub(sharedDataDir);
-    console.log(`Shared event hub is ready at ${shared.root}.`);
+    console.log(`Shared event hub selected: ${sharedDataDir}.`);
   }
 
   if (setupOnly) {
@@ -165,12 +167,13 @@ async function main() {
     return;
   }
 
-  if (sharedDataDir) initializeSharedHub(sharedDataDir);
   const privateBackend = await startPrivateLocalBackend(backendBinaryPath);
   console.log("\nStarting local-only Convex, Next.js, and AI...");
   if (sharedDataDir) {
     console.log(`Shared-folder event sync: ${path.resolve(sharedDataDir)}`);
     console.log("No application or database ports are advertised to the LAN.");
+  } else {
+    console.log("Shared-folder sync: off (this laptop is local only).");
   }
   console.log(
     openLocalAppBrowser
@@ -196,14 +199,16 @@ async function main() {
     },
   );
 
-  const syncChild = sharedDataDir
-    ? spawn(process.execPath, [path.join(root, "scripts", "shared-sync.mjs")], {
-        cwd: root,
-        env: process.env,
-        stdio: "inherit",
-        windowsHide: true,
-      })
-    : null;
+  const syncChild = spawn(
+    process.execPath,
+    [path.join(root, "scripts", "shared-sync-supervisor.mjs")],
+    {
+      cwd: root,
+      env: process.env,
+      stdio: "inherit",
+      windowsHide: true,
+    },
+  );
 
   let shuttingDown = false;
   const shutdown = (signal) => {
@@ -2168,6 +2173,8 @@ function persistResolvedModelEnv() {
     OLLAMA_BASE_URL: ollamaBaseUrl,
     OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || "30m",
     BETTER_AUTH_SECRET: betterAuthSecret,
+    ECC_SHARED_MODE: sharedSelection.mode,
+    ECC_SHARED_DATA_DIR: sharedDataDir,
   };
   const existing = fs.existsSync(envPath)
     ? fs.readFileSync(envPath, "utf8").split(/\r?\n/)
@@ -2194,4 +2201,70 @@ function persistResolvedModelEnv() {
     envPath,
     `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}\n`,
   );
+}
+
+function resolveSharedSelection() {
+  const runtimeSelection = readJsonFile(
+    path.join(root, ".convex", "shared-selection.json"),
+  );
+  if (runtimeSelection?.mode === "documents") {
+    return {
+      mode: "documents",
+      path:
+        (typeof runtimeSelection.documentsPath === "string" &&
+          runtimeSelection.documentsPath.trim()) ||
+        (typeof runtimeSelection.path === "string" &&
+          runtimeSelection.path.trim()) ||
+        path.join(os.homedir(), "Documents", "ECC Tracker"),
+    };
+  }
+  if (runtimeSelection?.mode === "corporate") {
+    return {
+      mode: "corporate",
+      path: String.raw`\\huswlf0o\groups\Design Index\Ec&a Programs\PW Military ECC\Archive\ECC Tracker\Data`,
+    };
+  }
+  if (runtimeSelection?.mode === "off") return { mode: "off", path: "" };
+  if (
+    runtimeSelection?.mode === "custom" &&
+    typeof runtimeSelection.path === "string"
+  ) {
+    return { mode: "custom", path: runtimeSelection.path };
+  }
+  const mode = process.env.ECC_SHARED_MODE?.trim().toLowerCase();
+  const documentsPath = path.join(os.homedir(), "Documents", "ECC Tracker");
+  const corporatePath = String.raw`\\huswlf0o\groups\Design Index\Ec&a Programs\PW Military ECC\Archive\ECC Tracker\Data`;
+  if (mode === "documents" || mode === "personal") {
+    return { mode: "documents", path: documentsPath };
+  }
+  if (mode === "corporate") {
+    return { mode: "corporate", path: corporatePath };
+  }
+  if (mode === "off" || mode === "none" || mode === "local") {
+    return { mode: "off", path: "" };
+  }
+  const configuredPath = process.env.ECC_SHARED_DATA_DIR?.trim() || "";
+  if (mode === "custom") return { mode: "custom", path: configuredPath };
+  if (!configuredPath) return { mode: "corporate", path: corporatePath };
+  if (
+    path.resolve(configuredPath).toLowerCase() ===
+    path.resolve(documentsPath).toLowerCase()
+  ) {
+    return { mode: "documents", path: documentsPath };
+  }
+  if (
+    path.resolve(configuredPath).toLowerCase() ===
+    path.resolve(corporatePath).toLowerCase()
+  ) {
+    return { mode: "corporate", path: corporatePath };
+  }
+  return { mode: "custom", path: configuredPath };
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
 }

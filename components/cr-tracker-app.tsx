@@ -595,7 +595,7 @@ const workflowZoomStep = 0.1;
 const workflowCurrentStepInitialZoom = 1;
 const msEccNcdocRequirements = [
   "Separate MS ECC NCDOC from CC/CII and Supplier EC NCDOCs",
-  "Use REA number for Option 1 NCDOC naming when REA controls",
+  "Use ID PWES-ECC.REA#-Supplier EC# and name PWES Military Supplier ECC Checklist",
   "ECC waiver PDF",
   "OOC approvals PDF",
   "Waiver approvals PDF",
@@ -604,9 +604,9 @@ const msEccNcdocRequirements = [
   "12028, HSF-5280.03, SUB, AR, supplier EC, and redlines as applicable",
 ];
 const msEccXclassRequirements = [
-  "ECC Waiver PDF attached as xClass Other 1",
-  "OOC Approvals PDF attached as xClass Other 2",
-  "Waiver Approvals PDF attached as xClass Other 2",
+  "ECC Waiver PDF attached as xClass Other",
+  "Waiver Approvals PDF attached as xClass Other 1",
+  "Use separate xClass types/requests for OOC evidence, checklist, and differently classified files",
   "Export classification complete before SUB form is final",
 ];
 const msEccClosureRequirements = [
@@ -615,11 +615,13 @@ const msEccClosureRequirements = [
   "CM Working List is not applicable to MS ECC final closure",
 ];
 const cmWorkingListRequirements = [
-  "CO completion date and program risk",
-  "Priority code from tracker breakdown",
-  "Supporting documents uploaded in PLM/NCDOC",
-  "CR submitted to workflow; note CS/CM queue",
-  "Tracker rows copied into Friday CM email",
+  "Applicable ECC review completely closed out",
+  "Actions, OOC approvals, chair approval, NCDOC PDFs, and export-classification request complete",
+  "CM Working List Input Form received from IPT",
+  "MP/redlines, approvals, WU, SUB, AR, and other 107-WLX-003 documents reviewed",
+  "51XXXXX redlines and Part Properties Form have PD L3 approval when applicable",
+  "Input form attached to CM email; note Engineering/CS/CM queue",
+  "Targeted Submittal Date to CM recorded",
 ];
 const workflowExampleBasePath = "/workflow-examples";
 const msEccOocExamples: WorkflowExample[] = [
@@ -720,7 +722,7 @@ const cmWorkingListExamples: WorkflowExample[] = [
     src: `${workflowExampleBasePath}/cm-workflow-queue-note.png`,
   },
   {
-    label: "Friday CM email table",
+    label: "CM Working List additions email",
     src: `${workflowExampleBasePath}/friday-cm-email-table.png`,
   },
 ];
@@ -2303,7 +2305,7 @@ function WorkspaceRibbon({
   onFullscreenToggle: () => void;
 }) {
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-5">
+    <header className="relative flex h-14 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-5">
       {showLogo ? (
         <a
           href="#dashboard"
@@ -2322,7 +2324,8 @@ function WorkspaceRibbon({
       ) : (
         <span aria-hidden="true" />
       )}
-      <div className="flex items-center gap-2">
+      <div data-testid="workspace-toolbar" className="flex items-center gap-2">
+        <AppUpdateControl />
         <button
           type="button"
           onClick={onCreate}
@@ -2379,6 +2382,134 @@ function WorkspaceRibbon({
   );
 }
 
+type AppUpdateStatus = {
+  state: "current" | "available" | "blocked" | "error" | "updated";
+  branch: string;
+  upstream: string;
+  ahead: number;
+  behind: number;
+  dirty: boolean;
+  message: string;
+  checkedAt: number;
+};
+
+function AppUpdateControl() {
+  const [status, setStatus] = useState<AppUpdateStatus | null>(null);
+  const [isApplying, setIsApplying] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [noticeKind, setNoticeKind] = useState<"success" | "error">("success");
+
+  useEffect(() => {
+    let active = true;
+    let checking = false;
+    async function checkForUpdate(force = false) {
+      if (checking || document.visibilityState === "hidden") return;
+      checking = true;
+      try {
+        const response = await fetch(`/api/update${force ? "?force=1" : ""}`, {
+          cache: "no-store",
+        });
+        const result = (await response.json()) as AppUpdateStatus;
+        if (active && response.ok) setStatus(result);
+      } catch {
+        // Update checks are intentionally silent when GitHub is unavailable.
+      } finally {
+        checking = false;
+      }
+    }
+    void checkForUpdate();
+    const timer = window.setInterval(
+      () => void checkForUpdate(true),
+      5 * 60_000,
+    );
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") void checkForUpdate();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, []);
+
+  async function applyUpdate() {
+    setIsApplying(true);
+    setNotice("");
+    try {
+      const response = await fetch("/api/update", { method: "POST" });
+      const result = (await response.json()) as AppUpdateStatus & {
+        error?: string;
+      };
+      setStatus(result);
+      if (!response.ok || result.state !== "updated") {
+        throw new Error(
+          result.error ?? result.message ?? "Update could not be installed.",
+        );
+      }
+      setNoticeKind("success");
+      setNotice("Update downloaded. Restart the tracker to finish.");
+      window.setTimeout(() => setNotice(""), 15_000);
+    } catch (error) {
+      setNoticeKind("error");
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : "Update could not be installed.",
+      );
+      window.setTimeout(() => setNotice(""), 8_000);
+    } finally {
+      setIsApplying(false);
+    }
+  }
+
+  const showButton = status?.state === "available" || isApplying;
+
+  return (
+    <>
+      {showButton ? (
+        <button
+          data-testid="app-update-button"
+          type="button"
+          onClick={() => void applyUpdate()}
+          disabled={isApplying}
+          className="flex h-9 items-center justify-center gap-2 border border-gray-950 bg-gray-950 px-2.5 text-white transition hover:bg-gray-800 disabled:cursor-wait disabled:opacity-70 sm:px-3"
+          aria-label={
+            isApplying
+              ? "Installing Collins ES ECC Tracker update"
+              : `Install ${status?.behind ?? 1} available update${status?.behind === 1 ? "" : "s"}`
+          }
+          title={isApplying ? "Installing update" : status?.message}
+        >
+          <RefreshCw className={cn("h-4 w-4", isApplying && "animate-spin")} />
+          <span className="hidden text-xs font-semibold sm:inline">
+            {isApplying ? "Updating" : "Update"}
+          </span>
+          {!isApplying && status && status.behind > 0 ? (
+            <span className="flex h-4 min-w-4 items-center justify-center bg-white px-1 text-[10px] font-bold text-gray-950">
+              {status.behind > 9 ? "9+" : status.behind}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
+      {notice ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className={cn(
+            "absolute right-5 top-[calc(100%+8px)] z-50 max-w-sm border px-4 py-3 text-sm font-medium shadow-lg",
+            noticeKind === "success"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-red-200 bg-red-50 text-red-900",
+          )}
+        >
+          {notice}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function SettingsPage({
   signedInName,
   signedInEmail,
@@ -2409,6 +2540,100 @@ function SettingsPage({
   const [profileNameFields, setProfileNameFields] = useState(() =>
     splitFirstLastName(localOwner),
   );
+  const [sharing, setSharing] = useState<SharingStatus | null>(null);
+  const [sharingError, setSharingError] = useState("");
+  const [sharingSaving, setSharingSaving] = useState<SharingMode | null>(null);
+  const [documentsPathDraft, setDocumentsPathDraft] = useState("");
+  const documentsPathDirtyRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    let refreshing = false;
+    async function refreshSharing() {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const response = await fetch("/api/sharing", { cache: "no-store" });
+        const result = (await response.json()) as SharingStatus & {
+          error?: string;
+        };
+        if (!response.ok)
+          throw new Error(result.error ?? "Unable to read sharing status.");
+        if (active) {
+          setSharing(result);
+          setSharingError("");
+          if (!documentsPathDirtyRef.current) {
+            setDocumentsPathDraft(result.options.documents);
+          }
+        }
+      } catch (error) {
+        if (active) {
+          setSharingError(
+            error instanceof Error
+              ? error.message
+              : "Unable to read sharing status.",
+          );
+        }
+      } finally {
+        refreshing = false;
+      }
+    }
+    void refreshSharing();
+    const timer = window.setInterval(() => void refreshSharing(), 3_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  async function handleSharingModeChange(mode: SharingMode) {
+    await saveSharingPreference(mode, mode === "documents");
+  }
+
+  async function handleDocumentsPathSave() {
+    const currentMode =
+      sharing?.mode === "documents" ||
+      sharing?.mode === "corporate" ||
+      sharing?.mode === "off"
+        ? sharing.mode
+        : "documents";
+    await saveSharingPreference(currentMode, true);
+  }
+
+  async function saveSharingPreference(
+    mode: SharingMode,
+    includeDocumentsPath: boolean,
+  ) {
+    setSharingSaving(mode);
+    setSharingError("");
+    try {
+      const response = await fetch("/api/sharing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          documentsPath: includeDocumentsPath ? documentsPathDraft : undefined,
+        }),
+      });
+      const result = (await response.json()) as SharingStatus & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(result.error ?? "Unable to change sharing mode.");
+      }
+      setSharing(result);
+      setDocumentsPathDraft(result.options.documents);
+      documentsPathDirtyRef.current = false;
+    } catch (error) {
+      setSharingError(
+        error instanceof Error
+          ? error.message
+          : "Unable to change sharing mode.",
+      );
+    } finally {
+      setSharingSaving(null);
+    }
+  }
 
   function handleProfileNameFieldChange(
     field: keyof FirstLastName,
@@ -2612,6 +2837,127 @@ function SettingsPage({
       </div>
 
       <section className={cn(panelShell, "p-5")}>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className={sectionLabel}>Collaboration</p>
+            <h2 className="mt-1 text-xl font-semibold text-gray-950">
+              Shared data location
+            </h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-600">
+              Choose where this laptop synchronizes CRs, shared accounts,
+              backups, and AI chat history. The change takes effect while the
+              app is running.
+            </p>
+          </div>
+          <div className="min-w-48 border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
+            <p className={sectionLabel}>Sync status</p>
+            <p className="mt-1 font-semibold capitalize text-gray-950">
+              {formatSharingState(sharing?.syncState)}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 lg:grid-cols-3">
+          {sharingChoices.map((choice) => {
+            const selected = sharing?.mode === choice.mode;
+            const saving = sharingSaving === choice.mode;
+            return (
+              <button
+                key={choice.mode}
+                type="button"
+                disabled={sharingSaving !== null}
+                onClick={() => void handleSharingModeChange(choice.mode)}
+                className={cn(
+                  "min-h-32 border p-4 text-left transition disabled:cursor-wait disabled:opacity-70",
+                  selected
+                    ? "border-gray-950 bg-gray-950 text-white"
+                    : "border-gray-200 bg-white text-gray-950 hover:border-gray-400 hover:bg-gray-50",
+                )}
+              >
+                <span className="flex items-center justify-between gap-3">
+                  <span className="text-base font-semibold">
+                    {choice.label}
+                  </span>
+                  {saving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : selected ? (
+                    <CheckCircle2 className="h-4 w-4" />
+                  ) : null}
+                </span>
+                <span
+                  className={cn(
+                    "mt-2 block text-sm leading-5",
+                    selected ? "text-gray-200" : "text-gray-500",
+                  )}
+                >
+                  {choice.description}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-4 grid gap-3 border border-gray-200 bg-gray-50 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+          <label className="block">
+            <span className={cn("mb-1 block", sectionLabel)}>
+              Documents hub folder
+            </span>
+            <Input
+              value={documentsPathDraft}
+              onChange={(event) => {
+                documentsPathDirtyRef.current = true;
+                setDocumentsPathDraft(event.target.value);
+              }}
+              placeholder="C:\\Users\\your.name\\Documents\\ECC Tracker"
+              className="bg-white font-mono text-xs"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={sharingSaving !== null || !documentsPathDraft.trim()}
+            onClick={() => void handleDocumentsPathSave()}
+            className="h-10 border border-gray-950 bg-gray-950 px-4 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Save Documents path
+          </button>
+        </div>
+
+        <div className="mt-4 border border-gray-200 bg-gray-50 p-4 text-sm">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <span>
+              <span className="text-gray-500">Selected:</span>{" "}
+              <strong className="capitalize text-gray-950">
+                {sharing?.mode ?? "Checking"}
+              </strong>
+            </span>
+            {sharing && sharing.mode !== "off" ? (
+              <span>
+                <span className="text-gray-500">Folder:</span>{" "}
+                <code className="break-all text-xs text-gray-800">
+                  {sharing?.path}
+                </code>
+              </span>
+            ) : null}
+          </div>
+          {sharing && sharing.mode !== "off" && !sharing.reachable ? (
+            <p className="mt-3 font-medium text-amber-700">
+              This folder is not reachable right now. The app is working locally
+              and will resume shared synchronization automatically when access
+              returns.
+            </p>
+          ) : null}
+          {sharingError ? (
+            <p className="mt-3 font-medium text-red-700">{sharingError}</p>
+          ) : null}
+          <p className="mt-3 text-xs leading-5 text-gray-500">
+            Switching hubs can publish this laptop&apos;s current CR and AI data
+            into the selected location. Local Only stops shared reads and writes
+            without deleting any data.
+          </p>
+        </div>
+      </section>
+
+      <section className={cn(panelShell, "p-5")}>
         <p className={sectionLabel}>Dashboard</p>
         <h2 className="mt-1 text-xl font-semibold text-gray-950">
           Dashboard defaults
@@ -2650,6 +2996,51 @@ function SettingsPage({
     </section>
   );
 }
+
+type SharingMode = "documents" | "corporate" | "off";
+
+type SharingStatus = {
+  mode: SharingMode | "custom";
+  path: string;
+  reachable: boolean;
+  syncState: string;
+  lastSyncAt: number | null;
+  message: string;
+  options: {
+    documents: string;
+    corporate: string;
+    off: string;
+  };
+};
+
+function formatSharingState(state: string | undefined) {
+  if (!state) return "Checking";
+  if (state === "local-fallback") return "Local fallback";
+  return state.replaceAll("-", " ");
+}
+
+const sharingChoices: Array<{
+  mode: SharingMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    mode: "documents",
+    label: "Documents hub",
+    description:
+      "Sync through this Windows user's Documents\\ECC Tracker folder.",
+  },
+  {
+    mode: "corporate",
+    label: "Corporate hub",
+    description: "Sync through the PW Military ECC archive network folder.",
+  },
+  {
+    mode: "off",
+    label: "Local Only",
+    description: "Keep all activity on this laptop with shared sync disabled.",
+  },
+];
 
 function ProfileAvatar({
   name,

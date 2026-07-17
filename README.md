@@ -221,11 +221,20 @@ Convex database, and Ollama on `127.0.0.1`. Nothing needs to accept connections
 from another laptop. Collaboration happens through immutable JSON events in a
 folder that all team members can read and write.
 
-On every laptop, add its path to the same shared folder to `.env.local`:
+Start the app normally, open **Settings → Shared data location**, and choose:
 
-```env
-ECC_SHARED_DATA_DIR=C:\Users\your.name\Documents\ECC Tracker
-```
+- **Documents hub** — an editable folder path that initially uses
+  `C:\Users\<you>\Documents\ECC Tracker`
+- **Corporate hub** — `\\huswlf0o\groups\Design Index\Ec&a Programs\PW Military ECC\Archive\ECC Tracker\Data`
+- **Local Only** — no shared-folder reads or writes
+
+Corporate is the default preference. If its folder is unavailable, the app
+automatically works in Local Only fallback mode and resumes corporate syncing
+when access returns. The app stays running while the background supervisor
+starts, stops, or repoints synchronization. Turning sharing off does not delete
+local or shared data. When a shared mode is selected again, the existing local
+database reconciles with that hub; therefore, switching hubs can publish the
+laptop's current CR and AI data to the newly selected location.
 
 Everyone then uses the normal launcher:
 
@@ -316,6 +325,20 @@ npm run start          # ensures local models, then starts the production build
 npm run backup:now     # immediately create and verify a shared snapshot
 npm run backup:verify  # verify the newest snapshot checksum and contents
 ```
+
+## In-App Updates
+
+The tracker checks its tracked GitHub branch every five minutes. When new
+commits are available, an **Update** button appears in the top toolbar beside
+the existing CR, AI, fullscreen, and settings controls. Selecting it fetches
+the update and applies a fast-forward-only Git merge. After it finishes, close
+the running tracker and launch `start-windows.cmd` again; the normal launcher
+installs any dependency changes before starting the updated app.
+
+The updater will not overwrite a modified installation. If the local checkout
+contains code changes, has no tracked upstream branch, or has diverged from
+GitHub, the update is blocked and must be handled by a maintainer. GitHub or
+network failures do not interrupt normal local tracker use.
 
 ## Notes
 

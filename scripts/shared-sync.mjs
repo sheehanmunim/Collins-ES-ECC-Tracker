@@ -12,6 +12,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 nextEnv.loadEnvConfig(root);
 const sharedDataDir = process.env.ECC_SHARED_DATA_DIR?.trim();
 if (!sharedDataDir) process.exit(0);
+const syncStatusPath = process.env.ECC_SYNC_STATUS_PATH?.trim();
 
 const hub = initializeSharedHub(sharedDataDir);
 const localConfigPath = path.join(
@@ -48,15 +49,18 @@ await client.mutation(api.sync.seedOutbox, {
   hubId: hub.config.hubId,
 });
 console.log(`Shared-folder sync active: ${hub.root}`);
+writeSyncStatus("active", "Shared sync is active.");
 
 while (!stopping) {
   try {
     await importEvents();
     await publishOutbox();
     writeReplicaStatus();
+    writeSyncStatus("active", "Shared sync is active.", Date.now());
     const backup = maybeCreateSharedBackup({ hub, replicaId });
     if (backup) console.log(`Shared backup created: ${backup.snapshotFile}`);
   } catch (error) {
+    writeSyncStatus("retrying", formatError(error));
     console.warn(`Shared-folder sync retrying: ${formatError(error)}`);
   }
   await delay(1_500);
@@ -171,6 +175,28 @@ function writeReplicaStatus() {
       machine: os.hostname(),
       updatedAt: Date.now(),
     })}\n`,
+    "utf8",
+  );
+}
+
+function writeSyncStatus(state, message, lastSyncAt) {
+  if (!syncStatusPath) return;
+  fs.mkdirSync(path.dirname(syncStatusPath), { recursive: true });
+  fs.writeFileSync(
+    syncStatusPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        mode: process.env.ECC_SHARED_MODE || "custom",
+        path: sharedDataDir,
+        state,
+        message,
+        lastSyncAt: lastSyncAt ?? null,
+        updatedAt: Date.now(),
+      },
+      null,
+      2,
+    )}\n`,
     "utf8",
   );
 }

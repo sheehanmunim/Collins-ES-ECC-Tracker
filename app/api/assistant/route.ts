@@ -334,7 +334,7 @@ export async function POST(request: Request) {
       ? "The user is in live voice mode. Answer conversationally in 1 to 3 short sentences unless they ask for detail."
       : "",
     "If the user attaches a screenshot with CR intake notes, read the screenshot and extract the PWES Military ECC fields. Read digits exactly and double-check CR numbers, dates, and charge numbers. Map Presenter to ECC Coordinator, Timestamp or Timeslot to Meeting Date and Time, Provide Collins CR to Collins CR # / PW REA #, CR Title/Description to Description, Engine Programs affected to Engine Program(s), Review being requested and CR Classification to Class/Gate/Military Supplier EC, Component Model name to Component Model(s), and Open Charge Number to Charge Number.",
-    "For CM Working List questions, use the EC-35200 process knowledge and treat CM Working List as CM readiness work, not final CR closure.",
+    "For CM Working List questions, use EC-35200 Rev B process knowledge. CM Working List is post-ECC-closeout CM readiness work: do not start it until the applicable ECC review is completely closed out. Military Supplier ECC does not use this process.",
     "Do not reveal chain-of-thought or use think tags.",
     selectedCrNumber
       ? `The user currently has ${selectedCrNumber} selected in the UI.`
@@ -1323,7 +1323,7 @@ function buildWorkflowActionAnswer(
     command.status === "NCDOC/xClass" &&
     command.waiverOption === "MS ECC Option 1"
   ) {
-    return `${action} ${result.crNumber} in ${location} and moved it into MS ECC Option 1 records/xClass closeout${scope}.${owner}${previous} It needs SAD/SAD VP reports, NCDOC, xClass Other 1/Other 2 uploads, and the MS ECC closeout email. CM Working List is not applicable for this final MS ECC closeout path.`;
+    return `${action} ${result.crNumber} in ${location} and moved it into MS ECC Option 1 records/xClass closeout${scope}.${owner}${previous} It needs SAD/SAD VP reports, a separate MS ECC NCDOC, the current EC-30001 waiver xClass mapping (Other / Other 1 with separate requests as needed), and the MS ECC closeout email. CM Working List is not applicable for Military Supplier ECC.`;
   }
 
   if (command.status === "NCDOC/xClass") {

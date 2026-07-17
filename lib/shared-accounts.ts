@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { hashPassword, verifyPassword } from "better-auth/crypto";
+import { getSharingSelection } from "./sharing-config";
 
 const accountVersion = 1 as const;
 
@@ -25,7 +26,11 @@ export type PublicSharedAccount = Pick<
 >;
 
 export function sharedAccountsEnabled() {
-  return Boolean(process.env.ECC_SHARED_DATA_DIR?.trim());
+  const selection = getSharingSelection();
+  return (
+    selection.mode !== "off" &&
+    fs.existsSync(/* turbopackIgnore: true */ selection.path)
+  );
 }
 
 export async function enrollSharedAccount(input: {
@@ -109,7 +114,9 @@ function readSharedAccount(email: string): SharedAccount | null {
   const filePath = accountPath(email);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    parsed = JSON.parse(
+      fs.readFileSync(/* turbopackIgnore: true */ filePath, "utf8"),
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new SharedAccountError("INVALID_ACCOUNT");
@@ -125,7 +132,7 @@ function readSharedAccount(email: string): SharedAccount | null {
 }
 
 function accountPath(email: string) {
-  const sharedRoot = process.env.ECC_SHARED_DATA_DIR?.trim();
+  const sharedRoot = getSharingSelection().path;
   if (!sharedRoot) throw new Error("Shared account storage is not configured.");
   const fileName = `${crypto.createHash("sha256").update(email).digest("hex")}.json`;
   return path.join(path.resolve(sharedRoot), ".ecc-sync", "accounts", fileName);
