@@ -2473,23 +2473,18 @@ function AppUpdateControl() {
           type="button"
           onClick={() => void applyUpdate()}
           disabled={isApplying}
-          className="flex h-9 items-center justify-center gap-2 border border-gray-950 bg-gray-950 px-2.5 text-white transition hover:bg-gray-800 disabled:cursor-wait disabled:opacity-70 sm:px-3"
+          className="flex h-9 items-center justify-center gap-2 border border-blue-700 bg-blue-700 px-3 text-white transition hover:border-blue-800 hover:bg-blue-800 disabled:cursor-wait disabled:opacity-70"
           aria-label={
             isApplying
               ? "Installing Collins ES ECC Tracker update"
-              : `Install ${status?.behind ?? 1} available update${status?.behind === 1 ? "" : "s"}`
+              : "Install available Collins ES ECC Tracker update"
           }
-          title={isApplying ? "Installing update" : status?.message}
+          title={isApplying ? "Installing update" : "Install available update"}
         >
           <RefreshCw className={cn("h-4 w-4", isApplying && "animate-spin")} />
-          <span className="hidden text-xs font-semibold sm:inline">
+          <span className="text-xs font-semibold">
             {isApplying ? "Updating" : "Update"}
           </span>
-          {!isApplying && status && status.behind > 0 ? (
-            <span className="flex h-4 min-w-4 items-center justify-center bg-white px-1 text-[10px] font-bold text-gray-950">
-              {status.behind > 9 ? "9+" : status.behind}
-            </span>
-          ) : null}
         </button>
       ) : null}
       {notice ? (
