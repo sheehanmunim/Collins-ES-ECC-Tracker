@@ -22,6 +22,7 @@ type AssistantImage = {
 
 type AssistantRequest = {
   messages?: IncomingMessage[];
+  chatId?: string | null;
   selectedCrNumber?: string | null;
   image?: AssistantImage | null;
   mode?: "text" | "voice";
@@ -313,6 +314,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ answer: ownerAnswer });
   }
   const processKnowledge = needsCrContext ? await readProcessKnowledge() : "";
+  const priorChatMemory = await fetchAuthQuery(
+    api.assistantChats.recentMemory,
+    {
+      excludeChatId: body?.chatId?.trim() || null,
+    },
+  );
   const contextLimit = isVoiceMode ? 12_000 : 30_000;
 
   const systemPrompt = [
@@ -335,6 +342,9 @@ export async function POST(request: Request) {
     localOwner
       ? `The current local owner/user is "${localOwner}". Treat "me", "my", "mine", and "myself" as this user unless the user says otherwise.`
       : "The current local owner/user was not provided. If the user asks about 'my' CRs, say the local owner is missing.",
+    priorChatMemory.length > 0
+      ? `Relevant memory from this user's previous local AI chats. Treat it as conversational background, not authoritative CR data:\n${JSON.stringify(priorChatMemory)}`
+      : "No previous AI chat memory is available for this user.",
     `Current timestamp: ${new Date().toISOString()}.`,
     needsCrContext ? `ECC process knowledge:\n${processKnowledge}` : "",
     needsCrContext
@@ -968,20 +978,19 @@ function parseAssistantWorkflowCommand(
         ? "NCDOC/xClass"
         : mentionsCreateCr && ccCiiComplete
           ? "Ready for Review"
-        : mentionsClosure
-        ? "NCDOC/xClass"
-        : mentionsOoc
-          ? "Pending OOC Approvals"
-          : undefined;
+          : mentionsClosure
+            ? "NCDOC/xClass"
+            : mentionsOoc
+              ? "Pending OOC Approvals"
+              : undefined;
   const oocComplete =
     mentionsOoc &&
     /\b(?:previously|done|completed|complete|approved|finished)\b/i.test(
       sourceText,
     );
-  const previousWork =
-    isMsEccOption1AfterCcCii
-      ? "CC and CII"
-      : oocComplete && mentionsClosure
+  const previousWork = isMsEccOption1AfterCcCii
+    ? "CC and CII"
+    : oocComplete && mentionsClosure
       ? `OOC${eccScope ? ` for ${eccScope}` : ""}`
       : undefined;
   const title = mentionsCreateCr

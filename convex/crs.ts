@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { MutationCtx, QueryCtx, mutation, query } from "./_generated/server";
+import { queueCrDeletion, queueCrSnapshot } from "./sync";
 
 const crStatus = v.union(
   v.literal("Intake"),
@@ -199,6 +200,10 @@ function identityDisplayName(identity: AuthIdentity) {
   );
 }
 
+function identitySharedKey(identity: AuthIdentity) {
+  return identity.email?.trim().toLowerCase() || identity.tokenIdentifier;
+}
+
 function cleanCrNumber(value: string) {
   const normalized = normalizeCrNumber(value);
   if (!/^CR-\d{7}$/.test(normalized)) {
@@ -260,7 +265,7 @@ export const listWhiteboardPositions = query({
 
     const positions = await ctx.db
       .query("crWhiteboardPositions")
-      .withIndex("by_userKey", (q) => q.eq("userKey", identity.tokenIdentifier))
+      .withIndex("by_userKey", (q) => q.eq("userKey", identitySharedKey(identity)))
       .take(500);
 
     return positions.map((position) => ({
@@ -281,6 +286,7 @@ export const updateWhiteboardPosition = mutation({
   handler: async (ctx, args) => {
     const identity = await requireAuthenticated(ctx);
     await requireCr(ctx, args.crId);
+    const userKey = identitySharedKey(identity);
 
     const now = Date.now();
     const x = cleanWhiteboardCoordinate(args.x);
@@ -288,7 +294,7 @@ export const updateWhiteboardPosition = mutation({
     const existing = await ctx.db
       .query("crWhiteboardPositions")
       .withIndex("by_userKey_and_crId", (q) =>
-        q.eq("userKey", identity.tokenIdentifier).eq("crId", args.crId),
+        q.eq("userKey", userKey).eq("crId", args.crId),
       )
       .unique();
 
@@ -297,12 +303,15 @@ export const updateWhiteboardPosition = mutation({
     } else {
       await ctx.db.insert("crWhiteboardPositions", {
         crId: args.crId,
-        userKey: identity.tokenIdentifier,
+        userKey,
         x,
         y,
         updatedAt: now,
       });
     }
+
+    await ctx.db.patch(args.crId, { lastUpdatedAt: now });
+    await queueCrSnapshot(ctx, args.crId, now);
 
     return { crId: args.crId, x, y };
   },
@@ -427,6 +436,7 @@ export const setWorkflowRequirementCheck = mutation({
       [args.taskField]: nextState,
       lastUpdatedAt: now,
     });
+    await queueCrSnapshot(ctx, args.crId, now);
 
     return {
       crId: args.crId,
@@ -582,6 +592,8 @@ export const create = mutation({
       kind: "created",
       createdAt: now,
     });
+
+    await queueCrSnapshot(ctx, crId, now);
 
     return crId;
   },
@@ -824,6 +836,8 @@ export const update = mutation({
       });
     }
 
+    await queueCrSnapshot(ctx, args.id, now);
+
     return args.id;
   },
 });
@@ -947,6 +961,8 @@ export const upsertFromAssistant = mutation({
         createdAt: now,
       });
 
+      await queueCrSnapshot(ctx, existing._id, now);
+
       return {
         crId: existing._id,
         crNumber,
@@ -1040,6 +1056,8 @@ export const upsertFromAssistant = mutation({
       createdAt: now,
     });
 
+    await queueCrSnapshot(ctx, crId, now);
+
     return { crId, crNumber, operation: "created", status };
   },
 });
@@ -1066,6 +1084,7 @@ export const addUpdate = mutation({
       createdAt: now,
     });
     await ctx.db.patch(args.crId, { lastUpdatedAt: now });
+    await queueCrSnapshot(ctx, args.crId, now);
     return args.crId;
   },
 });
@@ -1084,6 +1103,7 @@ export const archive = mutation({
       kind: "edited",
       createdAt: now,
     });
+    await queueCrSnapshot(ctx, args.id, now);
     return args.id;
   },
 });
@@ -1106,6 +1126,7 @@ export const restore = mutation({
       kind: "edited",
       createdAt: now,
     });
+    await queueCrSnapshot(ctx, args.id, now);
     return args.id;
   },
 });
@@ -1182,6 +1203,7 @@ export const deleteArchived = mutation({
     }
 
     await ctx.db.delete(args.id);
+    await queueCrDeletion(ctx, cr.crNumber, Date.now());
     return { crNumber: cr.crNumber };
   },
 });
@@ -1240,6 +1262,7 @@ export const addAction = mutation({
       kind: "edited",
       createdAt: now,
     });
+    await queueCrSnapshot(ctx, args.crId, now);
     return args.crId;
   },
 });
@@ -1275,6 +1298,7 @@ export const updateActionStatus = mutation({
       kind: "edited",
       createdAt: now,
     });
+    await queueCrSnapshot(ctx, action.crId, now);
     return action.crId;
   },
 });
@@ -1335,6 +1359,7 @@ export const addApproval = mutation({
       kind: "edited",
       createdAt: now,
     });
+    await queueCrSnapshot(ctx, args.crId, now);
     return args.crId;
   },
 });
@@ -1374,6 +1399,7 @@ export const updateApprovalStatus = mutation({
       kind: "edited",
       createdAt: now,
     });
+    await queueCrSnapshot(ctx, approval.crId, now);
     return approval.crId;
   },
 });

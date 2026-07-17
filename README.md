@@ -73,7 +73,7 @@ http://localhost:3000
 On first run, the launcher writes local Convex state under `.convex/` and
 model choices into `.env.local`. Those files are intentionally ignored by Git so
 each laptop keeps its own CRs, users, model cache, and local database across
-future pulls.
+future pulls unless shared-team mode is configured below.
 
 You can also run the scripts directly:
 
@@ -204,7 +204,8 @@ want to force fully offline voice mode.
 Git tracks the app source, scripts, docs, and committed model mirror config. It
 does not track machine-local runtime state:
 
-- CR data and local Convex database state live under `.convex/`.
+- CR data and local Convex database state always live under `.convex/`.
+  Shared-team mode exchanges immutable events through `ECC_SHARED_DATA_DIR`.
 - generated Convex bindings live under `convex/_generated/`.
 - local environment values live in `.env.local`.
 - downloaded GGUF model files live under `.cache/ollama-models/`.
@@ -212,6 +213,85 @@ does not track machine-local runtime state:
 
 That means a user can pull app updates with `git pull` without replacing their
 existing local CRs, model cache, or machine-specific settings.
+
+## Shared Team Data With No Network Service
+
+Every laptop runs a private copy of the website, authentication service,
+Convex database, and Ollama on `127.0.0.1`. Nothing needs to accept connections
+from another laptop. Collaboration happens through immutable JSON events in a
+folder that all team members can read and write.
+
+On every laptop, add its path to the same shared folder to `.env.local`:
+
+```env
+ECC_SHARED_DATA_DIR=C:\Users\your.name\Documents\ECC Tracker
+```
+
+Everyone then uses the normal launcher:
+
+```powershell
+.\start-windows.cmd
+```
+
+The local sync process publishes changes and imports new events about every
+1.5 seconds. Different CRs merge independently. If two offline laptops edit the
+same CR, the later edit wins for that CR; the immutable event history remains
+available for audit and recovery.
+
+In shared-team mode, account enrollment also uses the shared folder. The first
+successful sign-up or sign-in writes one account record containing the user's
+normalized email, display name, and a slow `scrypt` password verifier. It never
+writes the plaintext password. On another laptop, a successful shared-account
+check prepares that laptop's local Better Auth account automatically, so the
+same email and tracker password work there. Session cookies and reusable
+session tokens remain local to each laptop and are never synchronized.
+
+Use a dedicated tracker password rather than a Windows or corporate SSO
+password. Restrict the shared folder to the ECC team: a password verifier is
+not plaintext, but anyone who can copy it can attempt offline password guesses.
+The authenticated email remains the stable key for authorship and the user's
+shared AI chat history.
+
+One active laptop creates a checksummed, compressed snapshot every six hours.
+Snapshots include the immutable CR/AI event journal and shared account records,
+are verified immediately after creation, and are retained for 30 days by
+default. The schedule can be changed in `.env.local`:
+
+```env
+ECC_BACKUP_INTERVAL_MINUTES=360
+ECC_BACKUP_RETENTION_DAYS=30
+```
+
+Manual backup and recovery checks are available without starting the website:
+
+```powershell
+npm run backup:now
+npm run backup:verify
+npm run backup:restore -- "C:\Users\your.name\Documents\ECC Tracker\.ecc-sync\backups\snapshot-....json.gz"
+```
+
+Restore is merge-only: it restores missing event/account files and will not
+overwrite files that already exist. A snapshot in the same shared drive
+protects against accidental edits and deletions, but it is not an independent
+disaster-recovery copy. Corporate production use should also copy the backups
+directory to storage with separate credentials and version retention.
+
+The shared folder contains only synchronization material:
+
+```text
+ECC Tracker/
+`-- .ecc-sync/
+    |-- config.json           # Shared hub ID and random synchronization key
+    |-- accounts/             # Account metadata and scrypt verifiers
+    |-- events/YYYY-MM/       # Immutable CR and AI-memory events
+    |-- replicas/             # Last-seen status files; no network addresses
+    `-- backups/              # Scheduled snapshots and checksum manifests
+```
+
+The local Convex database stays under each clone's `.convex/` folder. Never put
+that SQLite database in the shared folder. Restrict shared-folder permissions
+to the ECC team because anyone who can alter the event journal can alter shared
+tracker data or account enrollment records.
 
 Older clones may already have generated files tracked. If Git shows only
 `convex/_generated/`, `AGENTS.md`, `CLAUDE.md`, `skills-lock.json`, `.agents/`,
@@ -233,6 +313,8 @@ npm run convex:local   # local Convex only
 npm run lint           # lint the repo
 npm run build          # production build
 npm run start          # ensures local models, then starts the production build
+npm run backup:now     # immediately create and verify a shared snapshot
+npm run backup:verify  # verify the newest snapshot checksum and contents
 ```
 
 ## Notes

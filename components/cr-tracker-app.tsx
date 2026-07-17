@@ -1168,7 +1168,8 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
   }
 
   const owners = useMemo(() => {
-    const source = activeSection === "archived" ? archivedCrs ?? [] : crs ?? [];
+    const source =
+      activeSection === "archived" ? (archivedCrs ?? []) : (crs ?? []);
     return Array.from(new Set(source.map((cr) => cr.owner))).sort();
   }, [activeSection, archivedCrs, crs]);
   const peopleOptions = useMemo(
@@ -1182,7 +1183,8 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
   );
 
   const filteredCrs = useMemo(() => {
-    const source = activeSection === "archived" ? archivedCrs ?? [] : crs ?? [];
+    const source =
+      activeSection === "archived" ? (archivedCrs ?? []) : (crs ?? []);
     const term = search.trim().toLowerCase();
     return source.filter((cr) => {
       const matchesScope = crMatchesScope(cr, scope, localOwner);
@@ -1248,8 +1250,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     (selectedId && filteredCrs.find((cr) => cr._id === selectedId)) ??
     filteredCrs[0] ??
     null;
-  const requestLoading =
-    activeSection === "archived" ? !archivedCrs : !crs;
+  const requestLoading = activeSection === "archived" ? !archivedCrs : !crs;
   const isWorkflowExpanded =
     activeSection === "workflow" &&
     Boolean(selectedCr) &&
@@ -2732,21 +2733,62 @@ function LoginScreen() {
     try {
       if (mode === "signup") {
         const fullName = buildFullName(firstName, lastName);
-        const result = await authClient.signUp.email({
+        const shared = await requestSharedAccount({
+          action: "enroll",
           email,
           password,
           name: fullName || email,
         });
+        const result = await authClient.signUp.email({
+          email,
+          password,
+          name: shared.account?.name ?? (fullName || email),
+        });
         if (result.error) {
-          throw new Error(result.error.message ?? "Unable to create account.");
+          const signIn = await authClient.signIn.email({ email, password });
+          if (signIn.error) {
+            throw new Error(
+              result.error.message ?? "Unable to create the local account.",
+            );
+          }
         }
       } else {
         const result = await authClient.signIn.email({
           email,
           password,
         });
-        if (result.error) {
-          throw new Error(result.error.message ?? "Unable to sign in.");
+        if (!result.error) {
+          try {
+            await requestSharedAccount({
+              action: "enroll",
+              email,
+              password,
+              name: result.data?.user.name ?? email,
+            });
+          } catch (sharedError) {
+            await authClient.signOut();
+            throw sharedError;
+          }
+        } else {
+          const shared = await requestSharedAccount({
+            action: "verify",
+            email,
+            password,
+            name: email,
+          });
+          if (!shared.shared || !shared.account) {
+            throw new Error(result.error.message ?? "Unable to sign in.");
+          }
+          const localAccount = await authClient.signUp.email({
+            email,
+            password,
+            name: shared.account.name,
+          });
+          if (localAccount.error) {
+            throw new Error(
+              "This shared account exists, but the local account could not be prepared. Sign out on this laptop and try again.",
+            );
+          }
         }
       }
     } catch (caught) {
@@ -2884,6 +2926,30 @@ function LoginScreen() {
       </section>
     </main>
   );
+}
+
+type SharedAccountResponse = {
+  shared: boolean;
+  account?: { name: string };
+  error?: string;
+};
+
+async function requestSharedAccount(input: {
+  action: "enroll" | "verify";
+  email: string;
+  password: string;
+  name: string;
+}): Promise<SharedAccountResponse> {
+  const response = await fetch("/api/shared-auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const result = (await response.json()) as SharedAccountResponse;
+  if (!response.ok) {
+    throw new Error(result.error ?? "Shared account storage is unavailable.");
+  }
+  return result;
 }
 
 function MetricStrip({ stats }: { stats: ReturnType<typeof buildStats> }) {
@@ -4328,9 +4394,7 @@ function WorkflowWorkspace({
       <div
         className={cn(
           "grid gap-5",
-          isExpanded
-            ? "grid-cols-1"
-            : "xl:grid-cols-[360px_minmax(0,1fr)]",
+          isExpanded ? "grid-cols-1" : "xl:grid-cols-[360px_minmax(0,1fr)]",
         )}
       >
         {!isExpanded ? (
@@ -4619,12 +4683,7 @@ function WorkflowChart({
       key: currentWorkflowFocusKey,
       zoom: nextZoom,
     });
-  }, [
-    currentWorkflowFocusKey,
-    currentWorkflowPhaseItem,
-    fitMode,
-    isExpanded,
-  ]);
+  }, [currentWorkflowFocusKey, currentWorkflowPhaseItem, fitMode, isExpanded]);
 
   useEffect(() => {
     const viewport = workflowViewportRef.current;
@@ -4969,7 +5028,9 @@ function WorkflowChart({
                 isExpanded ? "Collapse workflow view" : "Expand workflow view"
               }
               title={
-                isExpanded ? "Collapse workflow view" : "Expand workflow in view"
+                isExpanded
+                  ? "Collapse workflow view"
+                  : "Expand workflow in view"
               }
             >
               {isExpanded ? (
@@ -5304,7 +5365,9 @@ function WorkflowTaskChecklistRow({
             <p className="font-semibold leading-5 text-slate-800">
               {task.label}
             </p>
-            <p className={cn("text-[11px] font-medium", requirementSummary.tone)}>
+            <p
+              className={cn("text-[11px] font-medium", requirementSummary.tone)}
+            >
               {requirementSummary.label}
             </p>
           </div>
@@ -6855,7 +6918,11 @@ function getWorkflowTaskDisplayState(
   state: TaskState,
   requirements?: WorkflowRequirement[],
 ): TaskState {
-  if (!requirements?.length || state === "Blocked" || state === "Not Applicable") {
+  if (
+    !requirements?.length ||
+    state === "Blocked" ||
+    state === "Not Applicable"
+  ) {
     return state;
   }
 
@@ -7534,6 +7601,23 @@ function AssistantPanel({
   const messagesRef = useRef(messages);
   const [chatSessions, setChatSessions] = useState<AssistantChatSession[]>([]);
   const chatSessionsRef = useRef<AssistantChatSession[]>([]);
+  const remoteChatSessions = useQuery(api.assistantChats.list, {});
+  const saveRemoteChat = useMutation(api.assistantChats.save);
+  const removeRemoteChat = useMutation(api.assistantChats.remove);
+  const remoteChatsMigratedRef = useRef(false);
+  const persistRemoteChat = useCallback(
+    (session: AssistantChatSession) =>
+      saveRemoteChat({
+        chatId: session.id,
+        title: session.title,
+        messages: session.messages,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+      }).catch(() => {
+        // The local cache remains usable while shared-folder sync is unavailable.
+      }),
+    [saveRemoteChat],
+  );
   const [activeChatId, setActiveChatId] = useState("");
   const activeChatIdRef = useRef("");
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -7616,6 +7700,69 @@ function AssistantPanel({
 
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (
+      remoteChatSessions === undefined ||
+      chatSessionsRef.current.length === 0
+    ) {
+      return;
+    }
+
+    const localSessions = chatSessionsRef.current;
+    const remoteById = new Map(
+      remoteChatSessions.map((session) => [session.chatId, session]),
+    );
+    const mergedById = new Map(
+      localSessions.map((session) => [session.id, session]),
+    );
+
+    for (const remote of remoteChatSessions) {
+      const local = mergedById.get(remote.chatId);
+      if (remote.isDeleted) {
+        if (!local || remote.updatedAt >= local.updatedAt) {
+          mergedById.delete(remote.chatId);
+        }
+        continue;
+      }
+      if (!local || remote.updatedAt > local.updatedAt) {
+        mergedById.set(remote.chatId, {
+          id: remote.chatId,
+          title: remote.title,
+          messages: normalizeAssistantMessages(remote.messages),
+          createdAt: remote.createdAt,
+          updatedAt: remote.updatedAt,
+        });
+      }
+    }
+
+    const merged = normalizeAssistantChatSessions([...mergedById.values()]);
+    if (merged.length > 0) {
+      chatSessionsRef.current = merged;
+      setChatSessions(merged);
+      writeAssistantChatSessions(merged);
+      const active = merged.find(
+        (session) => session.id === activeChatIdRef.current,
+      );
+      if (!active && !asking) {
+        const next = merged[0];
+        activeChatIdRef.current = next.id;
+        setActiveChatId(next.id);
+        messagesRef.current = next.messages;
+        setMessages(next.messages);
+      }
+    }
+
+    if (!remoteChatsMigratedRef.current) {
+      remoteChatsMigratedRef.current = true;
+      for (const local of localSessions) {
+        const remote = remoteById.get(local.id);
+        if (!remote || local.updatedAt > remote.updatedAt) {
+          void persistRemoteChat(local);
+        }
+      }
+    }
+  }, [asking, persistRemoteChat, remoteChatSessions]);
 
   useEffect(() => {
     const textArea = assistantTextAreaRef.current;
@@ -7711,6 +7858,7 @@ function AssistantPanel({
     messagesRef.current = normalizedMessages;
     setMessages(normalizedMessages);
     replaceChatSessions(nextSessions);
+    void persistRemoteChat(nextSession);
   }
 
   function handleNewChat() {
@@ -7738,6 +7886,7 @@ function AssistantPanel({
     setVoiceStatus("");
     setHistoryOpen(false);
     replaceChatSessions(nextSessions);
+    void persistRemoteChat(nextSession);
   }
 
   function handleSelectChat(chatId: string) {
@@ -7779,6 +7928,14 @@ function AssistantPanel({
         ? remainingSessions
         : [createAssistantChatSession()];
     replaceChatSessions(nextSessions);
+    const deletedAt =
+      Math.max(
+        0,
+        ...chatSessionsRef.current.map((session) => session.updatedAt),
+      ) + 1;
+    void removeRemoteChat({ chatId, updatedAt: deletedAt }).catch(() => {
+      // The deletion will be retried when this browser cache is reconciled.
+    });
 
     if (chatId !== activeChatIdRef.current) {
       return;
@@ -7834,6 +7991,7 @@ function AssistantPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: nextMessages.slice(-10),
+          chatId: activeChatIdRef.current,
           selectedCrNumber: selectedCr?.crNumber ?? null,
           currentUser: {
             localOwner,

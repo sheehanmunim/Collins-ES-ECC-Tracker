@@ -161,7 +161,10 @@ export default defineSchema({
     .index("by_isArchived_and_priority", ["isArchived", "priority"])
     .index("by_isArchived_and_owner", ["isArchived", "owner"])
     .index("by_isArchived_and_eccBoard", ["isArchived", "eccBoard"])
-    .index("by_isArchived_and_classification", ["isArchived", "classification"]),
+    .index("by_isArchived_and_classification", [
+      "isArchived",
+      "classification",
+    ]),
   crUpdates: defineTable({
     crId: v.id("crs"),
     author: v.string(),
@@ -226,4 +229,42 @@ export default defineSchema({
       "taskField",
       "requirementKey",
     ]),
+  assistantChatSessions: defineTable({
+    ownerKey: v.string(),
+    chatId: v.string(),
+    title: v.string(),
+    messages: v.array(
+      v.object({
+        role: v.union(v.literal("assistant"), v.literal("user")),
+        content: v.string(),
+      }),
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    isDeleted: v.boolean(),
+  })
+    .index("by_ownerKey_and_chatId", ["ownerKey", "chatId"])
+    .index("by_ownerKey_and_updatedAt", ["ownerKey", "updatedAt"])
+    .index("by_ownerKey_and_isDeleted_and_updatedAt", [
+      "ownerKey",
+      "isDeleted",
+      "updatedAt",
+    ]),
+  syncOutbox: defineTable({
+    eventId: v.string(),
+    entityType: v.union(v.literal("cr"), v.literal("assistantChat")),
+    entityKey: v.string(),
+    updatedAt: v.number(),
+    payload: v.string(),
+  })
+    .index("by_eventId", ["eventId"])
+    .index("by_updatedAt", ["updatedAt"]),
+  syncAppliedEvents: defineTable({
+    eventId: v.string(),
+    appliedAt: v.number(),
+  }).index("by_eventId", ["eventId"]),
+  syncSettings: defineTable({
+    key: v.string(),
+    value: v.string(),
+  }).index("by_key", ["key"]),
 });

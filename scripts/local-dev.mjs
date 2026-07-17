@@ -10,10 +10,15 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import nextEnv from "@next/env";
+import { initializeSharedHub } from "./shared-hub.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const { loadEnvConfig } = nextEnv;
+loadEnvConfig(root);
 const setupOnly = process.argv.includes("--setup-only");
 const modelsOnly = process.argv.includes("--models-only");
+const sharedDataDir = process.env.ECC_SHARED_DATA_DIR?.trim() || "";
 const modelConfig = readModelConfig();
 const systemMemoryGb = os.totalmem() / 1024 ** 3;
 const modelProfileName = selectModelProfileName();
@@ -76,7 +81,9 @@ const convexDownloadTimeoutMs = parsePositiveInteger(
   10 * 60 * 1000,
 );
 const localAppUrl = normalizeOptionalUrl(
-  process.env.LOCAL_APP_URL || modelConfig.localAppUrl || "http://localhost:3000",
+  process.env.LOCAL_APP_URL ||
+    modelConfig.localAppUrl ||
+    "http://localhost:3000",
 );
 const openLocalAppBrowser = parseBoolean(process.env.LOCAL_OPEN_BROWSER, true);
 const localAppOpenTimeoutMs = parsePositiveInteger(
@@ -88,7 +95,9 @@ const npmCommand = process.env.npm_execpath
   : process.platform === "win32"
     ? "npm.cmd"
     : "npm";
-const npmArgsPrefix = process.env.npm_execpath ? [process.env.npm_execpath] : [];
+const npmArgsPrefix = process.env.npm_execpath
+  ? [process.env.npm_execpath]
+  : [];
 let browserDownloaderPromptShown = false;
 
 main().catch((error) => {
@@ -107,7 +116,10 @@ async function main() {
   );
 
   if (!modelsOnly) {
-    run("Installing project dependencies", npmCommand, [...npmArgsPrefix, "install"]);
+    run("Installing project dependencies", npmCommand, [
+      ...npmArgsPrefix,
+      "install",
+    ]);
   }
 
   await ensureOllamaServer();
@@ -140,47 +152,163 @@ async function main() {
     return;
   }
 
-  await ensureConvexLocalDeploymentReady();
+  const backendBinaryPath = await ensureConvexLocalDeploymentReady();
+  writePrivateLocalEnv(readPrivateLocalConfig());
+
+  if (sharedDataDir && setupOnly) {
+    const shared = initializeSharedHub(sharedDataDir);
+    console.log(`Shared event hub is ready at ${shared.root}.`);
+  }
 
   if (setupOnly) {
     console.log("\nSetup complete. Run `npm run local` to start the tracker.");
     return;
   }
 
-  console.log("\nStarting local Convex and Next.js...");
+  if (sharedDataDir) initializeSharedHub(sharedDataDir);
+  const privateBackend = await startPrivateLocalBackend(backendBinaryPath);
+  console.log("\nStarting local-only Convex, Next.js, and AI...");
+  if (sharedDataDir) {
+    console.log(`Shared-folder event sync: ${path.resolve(sharedDataDir)}`);
+    console.log("No application or database ports are advertised to the LAN.");
+  }
   console.log(
     openLocalAppBrowser
       ? `The browser will open ${localAppUrl} when the server is ready.\n`
       : `Open ${localAppUrl} when the server is ready.\n`,
   );
 
-  const child = spawn(npmCommand, [...npmArgsPrefix, "run", "dev:local"], {
-    cwd: root,
-    env: {
-      ...process.env,
-      OLLAMA_MODEL: model,
-      OLLAMA_VOICE_MODEL: voiceModel,
-      OLLAMA_VISION_MODEL: visionModel,
-      OLLAMA_BASE_URL: ollamaBaseUrl,
-      LOCAL_MODEL_PROFILE: modelProfileName,
-      CONVEX_LOCAL_BACKEND_VERSION: convexLocalBackendVersion,
+  const child = spawn(
+    npmCommand,
+    [...npmArgsPrefix, "run", "dev:private-local"],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        OLLAMA_MODEL: model,
+        OLLAMA_VOICE_MODEL: voiceModel,
+        OLLAMA_VISION_MODEL: visionModel,
+        OLLAMA_BASE_URL: ollamaBaseUrl,
+        LOCAL_MODEL_PROFILE: modelProfileName,
+        CONVEX_LOCAL_BACKEND_VERSION: convexLocalBackendVersion,
+      },
+      stdio: "inherit",
     },
-    stdio: "inherit",
-  });
+  );
+
+  const syncChild = sharedDataDir
+    ? spawn(process.execPath, [path.join(root, "scripts", "shared-sync.mjs")], {
+        cwd: root,
+        env: process.env,
+        stdio: "inherit",
+        windowsHide: true,
+      })
+    : null;
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (syncChild && !syncChild.killed) syncChild.kill();
+    if (!child.killed) child.kill();
+    if (!privateBackend.child.killed) privateBackend.child.kill();
+    if (signal) process.exitCode = 0;
+  };
+
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
 
   if (openLocalAppBrowser) {
     openLocalAppWhenReady(child).catch((error) => {
-      console.warn(`Could not open ${localAppUrl} automatically: ${error.message}`);
+      console.warn(
+        `Could not open ${localAppUrl} automatically: ${error.message}`,
+      );
     });
   }
 
   child.on("exit", (code, signal) => {
+    if (syncChild && !syncChild.killed) syncChild.kill();
+    if (!privateBackend.child.killed) privateBackend.child.kill();
     if (signal) {
-      process.kill(process.pid, signal);
+      process.exitCode = 0;
       return;
     }
-    process.exit(code ?? 0);
+    process.exitCode = code ?? 0;
   });
+}
+
+async function startPrivateLocalBackend(backendBinaryPath) {
+  const deploymentDir = path.join(root, ".convex", "local", "default");
+  const config = readPrivateLocalConfig();
+  const child = spawn(
+    backendBinaryPath,
+    [
+      path.join(deploymentDir, "convex_local_backend.sqlite3"),
+      "--interface",
+      "127.0.0.1",
+      "--port",
+      String(config.ports.cloud),
+      "--site-proxy-port",
+      String(config.ports.site),
+      "--convex-origin",
+      `http://127.0.0.1:${config.ports.cloud}`,
+      "--convex-site",
+      `http://127.0.0.1:${config.ports.site}`,
+      "--instance-name",
+      config.deploymentName,
+      "--instance-secret",
+      config.instanceSecret,
+      "--local-storage",
+      path.join(deploymentDir, "convex_local_storage"),
+      "--disable-beacon",
+    ],
+    {
+      cwd: deploymentDir,
+      env: process.env,
+      stdio: "inherit",
+      windowsHide: true,
+    },
+  );
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(
+        `Private local Convex exited with code ${child.exitCode}.`,
+      );
+    }
+    if (await canReachUrl(`http://127.0.0.1:${config.ports.cloud}`)) {
+      return { child, config };
+    }
+    await sleep(300);
+  }
+  child.kill();
+  throw new Error("Private local Convex did not become ready.");
+}
+
+function readPrivateLocalConfig() {
+  return JSON.parse(
+    fs.readFileSync(
+      path.join(root, ".convex", "local", "default", "config.json"),
+      "utf8",
+    ),
+  );
+}
+
+function writePrivateLocalEnv(config) {
+  const envPath = path.join(root, ".convex", "private-local.env");
+  fs.writeFileSync(
+    envPath,
+    [
+      `CONVEX_SELF_HOSTED_URL=http://127.0.0.1:${config.ports.cloud}`,
+      `CONVEX_SELF_HOSTED_ADMIN_KEY=${config.adminKey}`,
+      `NEXT_PUBLIC_CONVEX_URL=http://127.0.0.1:${config.ports.cloud}`,
+      `NEXT_PUBLIC_CONVEX_SITE_URL=http://127.0.0.1:${config.ports.site}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return envPath;
 }
 
 function requireSupportedNode() {
@@ -230,7 +358,9 @@ async function openLocalAppWhenReady(child) {
   }
 
   if (!childExited) {
-    console.warn(`Timed out waiting for ${localAppUrl}; open it manually when ready.`);
+    console.warn(
+      `Timed out waiting for ${localAppUrl}; open it manually when ready.`,
+    );
   }
 }
 
@@ -238,14 +368,10 @@ function canReachUrl(url) {
   return new Promise((resolve) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "https:" ? https : http;
-    const request = client.request(
-      parsedUrl,
-      { method: "GET" },
-      (response) => {
-        response.resume();
-        resolve((response.statusCode ?? 500) < 500);
-      },
-    );
+    const request = client.request(parsedUrl, { method: "GET" }, (response) => {
+      response.resume();
+      resolve((response.statusCode ?? 500) < 500);
+    });
     request.on("error", () => resolve(false));
     request.setTimeout(2000, () => {
       request.destroy();
@@ -272,12 +398,15 @@ async function ensureConvexLocalDeploymentReady() {
   const backendBinaryPath = await ensureConvexBackendBinary();
   await ensureConvexDashboard();
   ensureConvexAnonymousConfig(backendBinaryPath);
+  return backendBinaryPath;
 }
 
 async function ensureConvexBackendBinary() {
   const binaryPath = getConvexBackendBinaryPath();
   if (fs.existsSync(binaryPath)) {
-    console.log(`Convex backend ${convexLocalBackendVersion} is already cached.`);
+    console.log(
+      `Convex backend ${convexLocalBackendVersion} is already cached.`,
+    );
     return binaryPath;
   }
 
@@ -306,9 +435,14 @@ async function ensureConvexBackendBinary() {
   fs.rmSync(extractDir, { recursive: true, force: true });
   await extractZip(zipPath, extractDir);
 
-  const extractedBinary = findFileByName(extractDir, getConvexBackendExecutableName());
+  const extractedBinary = findFileByName(
+    extractDir,
+    getConvexBackendExecutableName(),
+  );
   if (!extractedBinary) {
-    throw new Error(`Downloaded Convex backend did not contain ${getConvexBackendExecutableName()}.`);
+    throw new Error(
+      `Downloaded Convex backend did not contain ${getConvexBackendExecutableName()}.`,
+    );
   }
 
   fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
@@ -320,12 +454,18 @@ async function ensureConvexBackendBinary() {
 }
 
 async function ensureConvexDashboard() {
-  const dashboardConfigPath = path.join(getConvexCacheDir(), "dashboard", "config.json");
+  const dashboardConfigPath = path.join(
+    getConvexCacheDir(),
+    "dashboard",
+    "config.json",
+  );
   if (fs.existsSync(dashboardConfigPath)) {
     try {
       const config = JSON.parse(fs.readFileSync(dashboardConfigPath, "utf8"));
       if (config?.version === convexLocalBackendVersion) {
-        console.log(`Convex dashboard ${convexLocalBackendVersion} is already cached.`);
+        console.log(
+          `Convex dashboard ${convexLocalBackendVersion} is already cached.`,
+        );
         return;
       }
     } catch {
@@ -360,7 +500,13 @@ async function ensureConvexDashboard() {
 }
 
 function ensureConvexAnonymousConfig(backendBinaryPath) {
-  const configPath = path.join(root, ".convex", "local", "default", "config.json");
+  const configPath = path.join(
+    root,
+    ".convex",
+    "local",
+    "default",
+    "config.json",
+  );
   if (fs.existsSync(configPath)) {
     console.log("Local Convex deployment config is already present.");
     return;
@@ -390,7 +536,9 @@ function ensureConvexAnonymousConfig(backendBinaryPath) {
       deploymentName,
     }),
   );
-  console.log("Created local Convex deployment config without contacting Convex cloud.");
+  console.log(
+    "Created local Convex deployment config without contacting Convex cloud.",
+  );
 }
 
 function generateConvexAdminKey({
@@ -417,7 +565,9 @@ function generateConvexAdminKey({
   );
 
   if (result.status !== 0 || !result.stdout.trim()) {
-    throw new Error(`Could not generate local Convex admin key: ${formatProcessError(result)}`);
+    throw new Error(
+      `Could not generate local Convex admin key: ${formatProcessError(result)}`,
+    );
   }
 
   return result.stdout.trim();
@@ -438,11 +588,15 @@ async function downloadConvexArtifact({
   for (const url of candidates) {
     try {
       console.log(`Downloading ${label}: ${url}`);
-      await downloadFile(url, targetPath, { timeoutMs: convexDownloadTimeoutMs });
+      await downloadFile(url, targetPath, {
+        timeoutMs: convexDownloadTimeoutMs,
+      });
       return;
     } catch (error) {
       lastError = error;
-      console.warn(`${label} download failed from ${url}: ${formatErrorMessage(error)}`);
+      console.warn(
+        `${label} download failed from ${url}: ${formatErrorMessage(error)}`,
+      );
     }
   }
 
@@ -475,17 +629,23 @@ async function extractZip(zipPath, destinationDir) {
       },
     );
     if (result.status !== 0) {
-      throw new Error(`Could not extract ${zipPath}: ${formatProcessError(result)}`);
+      throw new Error(
+        `Could not extract ${zipPath}: ${formatProcessError(result)}`,
+      );
     }
     return;
   }
 
-  const unzipResult = spawnSync("unzip", ["-oq", zipPath, "-d", destinationDir], {
-    cwd: root,
-    encoding: "utf8",
-    shell: false,
-    timeout: convexDownloadTimeoutMs,
-  });
+  const unzipResult = spawnSync(
+    "unzip",
+    ["-oq", zipPath, "-d", destinationDir],
+    {
+      cwd: root,
+      encoding: "utf8",
+      shell: false,
+      timeout: convexDownloadTimeoutMs,
+    },
+  );
   if (unzipResult.status === 0) {
     return;
   }
@@ -501,7 +661,9 @@ async function extractZip(zipPath, destinationDir) {
     },
   );
   if (pythonResult.status !== 0) {
-    throw new Error(`Could not extract ${zipPath}: ${formatProcessError(pythonResult)}`);
+    throw new Error(
+      `Could not extract ${zipPath}: ${formatProcessError(pythonResult)}`,
+    );
   }
 }
 
@@ -643,7 +805,11 @@ async function resolveAdaptiveOllamaModel({
 
   const installedModels = await getOllamaModels();
   const rankedCandidates = rankModelCandidates(role, installedModels);
-  let candidates = unique([...rankedCandidates, requestedName, ...fallbackNames]);
+  let candidates = unique([
+    ...rankedCandidates,
+    requestedName,
+    ...fallbackNames,
+  ]);
   if (registryFallbackDisabled) {
     candidates = candidates.filter((candidate) =>
       canInstallWithoutRegistry(candidate, installedModels),
@@ -687,15 +853,25 @@ function rankModelCandidates(role, installedModels) {
   const compatibleCandidates = candidates.filter((candidate) =>
     isCandidateCompatible(candidate),
   );
-  const pool = compatibleCandidates.length > 0 ? compatibleCandidates : candidates;
-  const weights = normalizeWeights(modelConfig.weights?.[modelProfileName]?.[role]);
+  const pool =
+    compatibleCandidates.length > 0 ? compatibleCandidates : candidates;
+  const weights = normalizeWeights(
+    modelConfig.weights?.[modelProfileName]?.[role],
+  );
   const installedSet = new Set(installedModels);
-  const installedBonus = Number(modelConfig.installedBonus?.[modelProfileName] ?? 0);
+  const installedBonus = Number(
+    modelConfig.installedBonus?.[modelProfileName] ?? 0,
+  );
 
   return pool
     .map((candidate) => ({
       name: candidate.name,
-      score: scoreModelCandidate(candidate, weights, installedSet, installedBonus),
+      score: scoreModelCandidate(
+        candidate,
+        weights,
+        installedSet,
+        installedBonus,
+      ),
     }))
     .filter((candidate) => typeof candidate.name === "string" && candidate.name)
     .sort((left, right) => right.score - left.score)
@@ -706,17 +882,24 @@ function scoreModelCandidate(candidate, weights, installedSet, installedBonus) {
   const quality = Number(candidate.quality ?? 0);
   const speed = Number(candidate.speed ?? 0);
   const memoryPenalty =
-    typeof candidate.minRamGb === "number" && candidate.minRamGb > systemMemoryGb
+    typeof candidate.minRamGb === "number" &&
+    candidate.minRamGb > systemMemoryGb
       ? (candidate.minRamGb - systemMemoryGb) * 0.3
       : 0;
   const cachedBonus = installedSet.has(candidate.name) ? installedBonus : 0;
 
-  return quality * weights.quality + speed * weights.speed + cachedBonus - memoryPenalty;
+  return (
+    quality * weights.quality +
+    speed * weights.speed +
+    cachedBonus -
+    memoryPenalty
+  );
 }
 
 function isCandidateCompatible(candidate) {
   return (
-    typeof candidate.minRamGb !== "number" || candidate.minRamGb <= systemMemoryGb
+    typeof candidate.minRamGb !== "number" ||
+    candidate.minRamGb <= systemMemoryGb
   );
 }
 
@@ -759,7 +942,9 @@ async function ensureOllamaModel(name) {
   }
 
   const artifact = getModelArtifact(name);
-  console.log(`Preparing ${name}. This can take a few minutes the first time...`);
+  console.log(
+    `Preparing ${name}. This can take a few minutes the first time...`,
+  );
   if (await ensureOllamaModelFromArtifact(name, artifact)) {
     return true;
   }
@@ -773,7 +958,10 @@ async function ensureOllamaModel(name) {
   return runOptional(`Pulling ${name}`, "ollama", ["pull", name]);
 }
 
-async function ensureOllamaModelFromArtifact(name, artifact = getModelArtifact(name)) {
+async function ensureOllamaModelFromArtifact(
+  name,
+  artifact = getModelArtifact(name),
+) {
   let hasArtifact = fs.existsSync(artifact.path);
 
   if (!hasArtifact && artifact.preferManifest && artifact.manifestUrl) {
@@ -801,14 +989,14 @@ async function ensureOllamaModelFromArtifact(name, artifact = getModelArtifact(n
   }
 
   const modelfilePath = writeArtifactModelfile(name, artifact.path, artifact);
-  return runOptional(`Creating ${name} from local artifact`, "ollama", [
-    "create",
-    name,
-    "-f",
-    modelfilePath,
-  ], {
-    cwd: path.dirname(artifact.path),
-  });
+  return runOptional(
+    `Creating ${name} from local artifact`,
+    "ollama",
+    ["create", name, "-f", modelfilePath],
+    {
+      cwd: path.dirname(artifact.path),
+    },
+  );
 }
 
 async function tryDownloadModelArtifact(name, artifact) {
@@ -896,7 +1084,9 @@ async function promptForBrowserModelDownload(label) {
     ].join("\n"),
   );
   openUrlInDefaultBrowser(modelMirrorBrowserDownloaderUrl);
-  await waitForEnter(`Press Enter after the browser downloader finishes ${label} models...`);
+  await waitForEnter(
+    `Press Enter after the browser downloader finishes ${label} models...`,
+  );
   return true;
 }
 
@@ -907,10 +1097,7 @@ function openUrlInDefaultBrowser(url) {
       : process.platform === "darwin"
         ? "open"
         : "xdg-open";
-  const args =
-    process.platform === "win32"
-      ? ["/c", "start", "", url]
-      : [url];
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
 
   try {
     const child = spawn(command, args, {
@@ -965,7 +1152,8 @@ function getModelArtifact(name) {
         ? `${url}.manifest.json`
         : "";
   const manifestPath =
-    typeof configured.manifestPath === "string" && configured.manifestPath.trim()
+    typeof configured.manifestPath === "string" &&
+    configured.manifestPath.trim()
       ? resolveWorkspacePath(configured.manifestPath.trim())
       : "";
 
@@ -1027,7 +1215,11 @@ function normalizeModelfileLines(value) {
 
 async function downloadChunkedArtifact(artifact) {
   const manifest = await readArtifactManifest(artifact);
-  if (!manifest || !Array.isArray(manifest.parts) || manifest.parts.length === 0) {
+  if (
+    !manifest ||
+    !Array.isArray(manifest.parts) ||
+    manifest.parts.length === 0
+  ) {
     throw new Error("Chunk manifest did not include any parts");
   }
 
@@ -1051,7 +1243,10 @@ async function downloadChunkedArtifact(artifact) {
       throw new Error(`Chunk ${index + 1} did not include a path or URL`);
     }
 
-    const partPath = path.join(tempDir, `part-${String(index).padStart(4, "0")}`);
+    const partPath = path.join(
+      tempDir,
+      `part-${String(index).padStart(4, "0")}`,
+    );
     console.log(
       `Downloading model chunk ${index + 1} of ${manifest.parts.length}...`,
     );
@@ -1153,24 +1348,28 @@ function requestJsonDirect(url) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "https:" ? https : http;
-    const request = client.get(parsedUrl, getRequestOptions(url), (response) => {
-      let body = "";
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => {
-        body += chunk;
-      });
-      response.on("end", () => {
-        if ((response.statusCode ?? 500) >= 400) {
-          reject(new Error(`HTTP ${response.statusCode}`));
-          return;
-        }
-        try {
-          resolve(JSON.parse(body));
-        } catch (error) {
-          reject(error);
-        }
-      });
-    });
+    const request = client.get(
+      parsedUrl,
+      getRequestOptions(url),
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          if ((response.statusCode ?? 500) >= 400) {
+            reject(new Error(`HTTP ${response.statusCode}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
 
     request.on("error", reject);
     request.setTimeout(5_000, () => {
@@ -1208,7 +1407,9 @@ async function requestJsonWithCurl(url, originalError) {
   try {
     return JSON.parse(result.stdout);
   } catch (error) {
-    throw new Error(`curl fallback returned invalid JSON: ${formatErrorMessage(error)}`);
+    throw new Error(
+      `curl fallback returned invalid JSON: ${formatErrorMessage(error)}`,
+    );
   }
 }
 
@@ -1228,7 +1429,12 @@ async function downloadFile(url, targetPath, options = {}) {
       let fallbackError = curlError;
       if (process.platform === "win32") {
         try {
-          await downloadFileWithPowerShell(url, targetPath, curlError, downloadOptions);
+          await downloadFileWithPowerShell(
+            url,
+            targetPath,
+            curlError,
+            downloadOptions,
+          );
           return;
         } catch (powerShellError) {
           fallbackError = powerShellError;
@@ -1238,7 +1444,12 @@ async function downloadFile(url, targetPath, options = {}) {
       if (!shouldUseBrowserFallback(url)) {
         throw fallbackError;
       }
-      await downloadFileWithBrowser(url, targetPath, fallbackError, downloadOptions);
+      await downloadFileWithBrowser(
+        url,
+        targetPath,
+        fallbackError,
+        downloadOptions,
+      );
     }
   }
 }
@@ -1256,58 +1467,62 @@ function downloadFileDirect(url, targetPath, options, redirectCount = 0) {
     const tempPath = `${targetPath}.download`;
     fs.rmSync(tempPath, { force: true });
 
-    const request = client.get(parsedUrl, getRequestOptions(url), (response) => {
-      const statusCode = response.statusCode ?? 500;
-      const location = response.headers.location;
-      if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
-        response.resume();
-        downloadFileDirect(
-          new URL(location, parsedUrl).toString(),
-          targetPath,
-          options,
-          redirectCount + 1,
-        )
-          .then(resolve)
-          .catch(reject);
-        return;
-      }
-
-      if (statusCode >= 400) {
-        response.resume();
-        reject(new Error(`HTTP ${statusCode}`));
-        return;
-      }
-
-      const totalBytes = Number(response.headers["content-length"] ?? 0);
-      let downloadedBytes = 0;
-      let lastProgressAt = Date.now();
-      const output = fs.createWriteStream(tempPath);
-
-      response.on("data", (chunk) => {
-        downloadedBytes += chunk.length;
-        if (Date.now() - lastProgressAt >= 10_000) {
-          lastProgressAt = Date.now();
-          console.log(
-            totalBytes > 0
-              ? `Downloaded ${formatBytes(downloadedBytes)} of ${formatBytes(totalBytes)}...`
-              : `Downloaded ${formatBytes(downloadedBytes)}...`,
-          );
+    const request = client.get(
+      parsedUrl,
+      getRequestOptions(url),
+      (response) => {
+        const statusCode = response.statusCode ?? 500;
+        const location = response.headers.location;
+        if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+          response.resume();
+          downloadFileDirect(
+            new URL(location, parsedUrl).toString(),
+            targetPath,
+            options,
+            redirectCount + 1,
+          )
+            .then(resolve)
+            .catch(reject);
+          return;
         }
-      });
 
-      response.pipe(output);
-      output.on("finish", () => {
-        output.close(() => {
-          fs.renameSync(tempPath, targetPath);
-          resolve();
+        if (statusCode >= 400) {
+          response.resume();
+          reject(new Error(`HTTP ${statusCode}`));
+          return;
+        }
+
+        const totalBytes = Number(response.headers["content-length"] ?? 0);
+        let downloadedBytes = 0;
+        let lastProgressAt = Date.now();
+        const output = fs.createWriteStream(tempPath);
+
+        response.on("data", (chunk) => {
+          downloadedBytes += chunk.length;
+          if (Date.now() - lastProgressAt >= 10_000) {
+            lastProgressAt = Date.now();
+            console.log(
+              totalBytes > 0
+                ? `Downloaded ${formatBytes(downloadedBytes)} of ${formatBytes(totalBytes)}...`
+                : `Downloaded ${formatBytes(downloadedBytes)}...`,
+            );
+          }
         });
-      });
-      output.on("error", (error) => {
-        response.destroy();
-        fs.rmSync(tempPath, { force: true });
-        reject(error);
-      });
-    });
+
+        response.pipe(output);
+        output.on("finish", () => {
+          output.close(() => {
+            fs.renameSync(tempPath, targetPath);
+            resolve();
+          });
+        });
+        output.on("error", (error) => {
+          response.destroy();
+          fs.rmSync(tempPath, { force: true });
+          reject(error);
+        });
+      },
+    );
 
     request.on("error", (error) => {
       fs.rmSync(tempPath, { force: true });
@@ -1359,7 +1574,12 @@ async function downloadFileWithCurl(url, targetPath, originalError, options) {
   fs.renameSync(tempPath, targetPath);
 }
 
-async function downloadFileWithPowerShell(url, targetPath, originalError, options) {
+async function downloadFileWithPowerShell(
+  url,
+  targetPath,
+  originalError,
+  options,
+) {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const tempPath = `${targetPath}.download`;
   fs.rmSync(tempPath, { force: true });
@@ -1384,13 +1604,7 @@ async function downloadFileWithPowerShell(url, targetPath, originalError, option
   ].join("; ");
   const result = spawnSync(
     "powershell.exe",
-    [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      script,
-    ],
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
     {
       cwd: root,
       encoding: "utf8",
@@ -1415,7 +1629,12 @@ async function downloadFileWithPowerShell(url, targetPath, originalError, option
   fs.renameSync(tempPath, targetPath);
 }
 
-async function downloadFileWithBrowser(url, targetPath, originalError, options) {
+async function downloadFileWithBrowser(
+  url,
+  targetPath,
+  originalError,
+  options,
+) {
   const browserPath = findBrowserExecutable();
   if (!browserPath) {
     throw new Error(
@@ -1585,17 +1804,17 @@ function findBrowserPartialDownloads(downloadDirs, fileName, startedAt) {
   return downloadDirs.flatMap((downloadDir) =>
     fs
       .readdirSync(downloadDir)
-      .filter(
-        (entry) => {
-          if (
-            !entry.startsWith(fileName) ||
-            (!entry.endsWith(".crdownload") && !entry.endsWith(".tmp"))
-          ) {
-            return false;
-          }
-          return fs.statSync(path.join(downloadDir, entry)).mtimeMs >= startedAt - 2000;
-        },
-      )
+      .filter((entry) => {
+        if (
+          !entry.startsWith(fileName) ||
+          (!entry.endsWith(".crdownload") && !entry.endsWith(".tmp"))
+        ) {
+          return false;
+        }
+        return (
+          fs.statSync(path.join(downloadDir, entry)).mtimeMs >= startedAt - 2000
+        );
+      })
       .map((entry) => path.join(downloadDir, entry)),
   );
 }
@@ -1738,7 +1957,9 @@ function shouldUseCurlFallback(url, error) {
 }
 
 function shouldUseBrowserFallback(url) {
-  return browserModelDownloadEnabled && /^https?:\/\//i.test(url) && isMirrorUrl(url);
+  return (
+    browserModelDownloadEnabled && /^https?:\/\//i.test(url) && isMirrorUrl(url)
+  );
 }
 
 function escapeRegExp(value) {
@@ -1759,8 +1980,8 @@ function getRequestOptions(url) {
 }
 
 function isMirrorUrl(url) {
-  return unique([modelMirrorBaseUrl, convexBackendMirrorBaseUrl]).some((baseUrl) =>
-    url.startsWith(`${baseUrl}/`),
+  return unique([modelMirrorBaseUrl, convexBackendMirrorBaseUrl]).some(
+    (baseUrl) => url.startsWith(`${baseUrl}/`),
   );
 }
 
@@ -1932,13 +2153,21 @@ function unique(values) {
 
 function persistResolvedModelEnv() {
   const envPath = path.join(root, ".env.local");
+  const betterAuthSecret =
+    process.env.BETTER_AUTH_SECRET?.trim() ||
+    crypto.randomBytes(32).toString("base64url");
+  process.env.BETTER_AUTH_SECRET = betterAuthSecret;
   const nextValues = {
+    CONVEX_DEPLOYMENT: "anonymous:anonymous-agent",
+    NEXT_PUBLIC_CONVEX_URL: "http://127.0.0.1:3210",
+    NEXT_PUBLIC_CONVEX_SITE_URL: "http://127.0.0.1:3211",
     LOCAL_MODEL_PROFILE: modelProfileName,
     OLLAMA_MODEL: model,
     OLLAMA_VOICE_MODEL: voiceModel,
     OLLAMA_VISION_MODEL: visionModel,
     OLLAMA_BASE_URL: ollamaBaseUrl,
     OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || "30m",
+    BETTER_AUTH_SECRET: betterAuthSecret,
   };
   const existing = fs.existsSync(envPath)
     ? fs.readFileSync(envPath, "utf8").split(/\r?\n/)
