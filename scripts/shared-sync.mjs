@@ -31,6 +31,9 @@ const savedState = readJson(statePath);
 const seen = new Set(
   savedState?.hubId === hub.config.hubId ? (savedState.seen ?? []) : [],
 );
+let initialSyncComplete = Boolean(
+  savedState?.hubId === hub.config.hubId && savedState.initialSyncComplete,
+);
 const client = new ConvexHttpClient(convexUrl);
 client.setAdminAuth(localConfig.adminKey);
 let api;
@@ -44,17 +47,23 @@ await client.mutation(api.sync.configure, {
   secret: hub.config.syncSecret,
   hubId: hub.config.hubId,
 });
+console.log(`Preparing shared-folder sync: ${hub.root}`);
+writeSyncStatus("hydrating", "Importing existing shared data.");
+await importEvents();
 await client.mutation(api.sync.seedOutbox, {
   secret: hub.config.syncSecret,
   hubId: hub.config.hubId,
 });
+await publishOutbox();
+initialSyncComplete = true;
+saveState();
 console.log(`Shared-folder sync active: ${hub.root}`);
-writeSyncStatus("active", "Shared sync is active.");
+writeSyncStatus("active", "Shared sync is active.", Date.now());
 
 while (!stopping) {
   try {
-    await importEvents();
     await publishOutbox();
+    await importEvents();
     writeReplicaStatus();
     writeSyncStatus("active", "Shared sync is active.", Date.now());
     const backup = maybeCreateSharedBackup({ hub, replicaId });
@@ -106,13 +115,22 @@ async function publishOutbox() {
       `${row.updatedAt}-${row.eventId}.json`,
     );
     const event = {
-      version: 1,
+      version: row.protocolVersion === 2 ? 2 : 1,
       eventId: row.eventId,
       entityType: row.entityType,
       entityKey: row.entityKey,
       updatedAt: row.updatedAt,
       origin: replicaId,
       payload: row.payload,
+      ...(row.protocolVersion === 2
+        ? {
+            protocolVersion: 2,
+            baseEventId: row.baseEventId ?? null,
+            logicalTime: row.logicalTime,
+            resolvesEventIds: row.resolvesEventIds ?? [],
+            conflictResolution: row.conflictResolution ?? null,
+          }
+        : {}),
     };
     try {
       fs.writeFileSync(filePath, `${JSON.stringify(event)}\n`, {
@@ -133,34 +151,65 @@ async function publishOutbox() {
 }
 
 async function importEvents() {
-  const events = [];
+  const remaining = new Map();
   for (const directory of listDirectories(hub.eventsDir)) {
     for (const filePath of listJsonFiles(directory)) {
       const event = readJson(filePath);
       if (!validEvent(event) || seen.has(event.eventId)) continue;
-      events.push(event);
+      remaining.set(event.eventId, event);
     }
   }
-  events.sort(
-    (left, right) =>
-      left.updatedAt - right.updatedAt ||
-      left.eventId.localeCompare(right.eventId),
-  );
-  for (let index = 0; index < events.length; index += 20) {
-    const batch = events.slice(index, index + 20);
+
+  while (remaining.size) {
+    let batch = [...remaining.values()]
+      .filter(
+        (event) =>
+          !event.baseEventId ||
+          seen.has(event.baseEventId) ||
+          !remaining.has(event.baseEventId),
+      )
+      .sort(compareEvents)
+      .slice(0, 20);
+    if (!batch.length) {
+      // A corrupt/cyclic lineage must not permanently stall unrelated sync.
+      batch = [...remaining.values()].sort(compareEvents).slice(0, 20);
+    }
     const applied = await client.mutation(api.sync.applyEvents, {
       secret: hub.config.syncSecret,
       events: batch.map(
-        ({ eventId, entityType, entityKey, updatedAt, payload }) => ({
+        ({
           eventId,
           entityType,
           entityKey,
           updatedAt,
           payload,
+          protocolVersion,
+          baseEventId,
+          logicalTime,
+          resolvesEventIds,
+          conflictResolution,
+        }) => ({
+          eventId,
+          entityType,
+          entityKey,
+          updatedAt,
+          payload,
+          ...(protocolVersion === 2
+            ? {
+                protocolVersion,
+                baseEventId: baseEventId ?? undefined,
+                logicalTime,
+                resolvesEventIds: resolvesEventIds ?? [],
+                conflictResolution: conflictResolution ?? undefined,
+              }
+            : {}),
         }),
       ),
     });
-    for (const eventId of applied) seen.add(eventId);
+    for (const eventId of applied) {
+      seen.add(eventId);
+      remaining.delete(eventId);
+    }
     saveState();
   }
 }
@@ -191,6 +240,7 @@ function writeSyncStatus(state, message, lastSyncAt) {
         path: sharedDataDir,
         state,
         message,
+        initialSyncComplete,
         lastSyncAt: lastSyncAt ?? null,
         updatedAt: Date.now(),
       },
@@ -204,7 +254,12 @@ function writeSyncStatus(state, message, lastSyncAt) {
 function saveState() {
   fs.writeFileSync(
     statePath,
-    `${JSON.stringify({ hubId: hub.config.hubId, seen: [...seen] })}\n`,
+    `${JSON.stringify({
+      hubId: hub.config.hubId,
+      selectionPath: hub.root,
+      initialSyncComplete,
+      seen: [...seen],
+    })}\n`,
     "utf8",
   );
 }
@@ -248,12 +303,29 @@ function readJson(filePath) {
 
 function validEvent(event) {
   return Boolean(
-    event?.version === 1 &&
+    (event?.version === 1 ||
+      (event?.version === 2 &&
+        event.protocolVersion === 2 &&
+        Number.isFinite(event.logicalTime) &&
+        (event.baseEventId === null ||
+          typeof event.baseEventId === "string"))) &&
       typeof event.eventId === "string" &&
       (event.entityType === "cr" || event.entityType === "assistantChat") &&
       typeof event.entityKey === "string" &&
       Number.isFinite(event.updatedAt) &&
       typeof event.payload === "string",
+  );
+}
+
+function compareEvents(left, right) {
+  const leftTime =
+    left.protocolVersion === 2 ? left.logicalTime : left.updatedAt;
+  const rightTime =
+    right.protocolVersion === 2 ? right.logicalTime : right.updatedAt;
+  return (
+    leftTime - rightTime ||
+    left.updatedAt - right.updatedAt ||
+    left.eventId.localeCompare(right.eventId)
   );
 }
 

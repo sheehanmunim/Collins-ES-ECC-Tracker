@@ -16,6 +16,8 @@ import {
   ChevronDown,
   CheckCircle2,
   CircleDot,
+  Cloud,
+  CloudOff,
   Download,
   FileSpreadsheet,
   Focus,
@@ -1101,6 +1103,9 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
   );
   const crs = useQuery(api.crs.list, { status: "All" });
   const archivedCrs = useQuery(api.crs.listArchived);
+  const sharingStatus = useSharingStatus();
+  const syncConflicts = useQuery(api.sync.listConflicts) ?? [];
+  const resolveSyncConflict = useMutation(api.sync.resolveConflict);
   const createCr = useMutation(api.crs.create);
   const updateCr = useMutation(api.crs.update);
   const [selectedId, setSelectedId] = useState<CrId | null>(null);
@@ -1124,6 +1129,9 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     useState<DashboardSection>("dashboard");
   const [isWorkflowExpandedRequested, setIsWorkflowExpandedRequested] =
     useState(false);
+  const [isConflictPanelOpen, setIsConflictPanelOpen] = useState(false);
+  const [resolvingConflictId, setResolvingConflictId] =
+    useState<Id<"syncConflicts"> | null>(null);
 
   useEffect(() => {
     function syncSidebarForViewport() {
@@ -1332,6 +1340,29 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     setNotice(`${crNumber} deleted permanently.`);
   }
 
+  async function handleConflictResolution(
+    conflictId: Id<"syncConflicts">,
+    resolution: "keptCurrent" | "restoredConflict",
+  ) {
+    setResolvingConflictId(conflictId);
+    try {
+      await resolveSyncConflict({ conflictId, resolution });
+      setNotice(
+        resolution === "restoredConflict"
+          ? "The preserved conflict copy was restored and queued for sync."
+          : "The current version was kept and queued for sync.",
+      );
+    } finally {
+      setResolvingConflictId(null);
+    }
+  }
+
+  const initialSyncBlocked = Boolean(
+    sharingStatus &&
+      sharingStatus.mode !== "off" &&
+      !sharingStatus.initialSyncComplete,
+  );
+
   return (
     <div
       ref={appShellRef}
@@ -1366,6 +1397,9 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
               )
             }
             onSettings={() => handleSectionChange("settings")}
+            sharingStatus={sharingStatus}
+            hasSyncConflicts={syncConflicts.length > 0}
+            onSyncConflicts={() => setIsConflictPanelOpen(true)}
             showLogo={!isSidebarOpen}
             isAssistantOpen={isAssistantOpen}
             isFullscreen={isAppFullscreen}
@@ -1511,6 +1545,19 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
           }}
           onCancel={() => setIsCreating(false)}
         />
+      ) : null}
+      {isConflictPanelOpen ? (
+        <SyncConflictPanel
+          conflicts={syncConflicts}
+          resolvingConflictId={resolvingConflictId}
+          onResolve={(conflictId, resolution) =>
+            void handleConflictResolution(conflictId, resolution)
+          }
+          onClose={() => setIsConflictPanelOpen(false)}
+        />
+      ) : null}
+      {initialSyncBlocked && sharingStatus ? (
+        <InitialSyncGate status={sharingStatus} />
       ) : null}
     </div>
   );
@@ -2289,6 +2336,9 @@ function WorkspaceRibbon({
   onCreate,
   onAssistantToggle,
   onSettings,
+  sharingStatus,
+  hasSyncConflicts,
+  onSyncConflicts,
   showLogo,
   isAssistantOpen,
   isFullscreen,
@@ -2298,6 +2348,9 @@ function WorkspaceRibbon({
   onCreate: () => void;
   onAssistantToggle: () => void;
   onSettings: () => void;
+  sharingStatus: SharingStatus | null;
+  hasSyncConflicts: boolean;
+  onSyncConflicts: () => void;
   showLogo: boolean;
   isAssistantOpen: boolean;
   isFullscreen: boolean;
@@ -2325,6 +2378,11 @@ function WorkspaceRibbon({
         <span aria-hidden="true" />
       )}
       <div data-testid="workspace-toolbar" className="flex items-center gap-2">
+        <SyncStatusControl
+          status={sharingStatus}
+          hasConflicts={hasSyncConflicts}
+          onConflicts={onSyncConflicts}
+        />
         <AppUpdateControl />
         <button
           type="button"
@@ -2380,6 +2438,92 @@ function WorkspaceRibbon({
       </div>
     </header>
   );
+}
+
+function SyncStatusControl({
+  status,
+  hasConflicts,
+  onConflicts,
+}: {
+  status: SharingStatus | null;
+  hasConflicts: boolean;
+  onConflicts: () => void;
+}) {
+  const view = getSyncStatusView(status, hasConflicts);
+  const Icon = view.icon;
+  const className = cn(
+    "flex h-9 items-center justify-center gap-2 border px-3 text-xs font-semibold",
+    view.className,
+  );
+
+  if (hasConflicts) {
+    return (
+      <button
+        type="button"
+        onClick={onConflicts}
+        className={className}
+        title="Review preserved sync conflicts"
+      >
+        <Icon className="h-4 w-4" />
+        <span>{view.label}</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className={className} title={status?.message || view.label}>
+      <Icon
+        className={cn("h-4 w-4", view.label === "Syncing" && "animate-spin")}
+      />
+      <span>{view.label}</span>
+    </div>
+  );
+}
+
+function getSyncStatusView(
+  status: SharingStatus | null,
+  hasConflicts: boolean,
+) {
+  if (hasConflicts) {
+    return {
+      label: "Conflict",
+      icon: AlertTriangle,
+      className: "border-red-700 bg-red-700 text-white hover:bg-red-800",
+    };
+  }
+  if (
+    !status ||
+    ["switching", "starting", "hydrating"].includes(status.syncState)
+  ) {
+    return {
+      label: "Syncing",
+      icon: RefreshCw,
+      className: "border-blue-200 bg-blue-50 text-blue-800",
+    };
+  }
+  if (status.mode === "off") {
+    return {
+      label: "Local only",
+      icon: CloudOff,
+      className: "border-gray-200 bg-gray-50 text-gray-700",
+    };
+  }
+  if (
+    ["local-fallback", "permission-error", "retrying"].includes(
+      status.syncState,
+    )
+  ) {
+    return {
+      label: "Offline",
+      icon: CloudOff,
+      className: "border-amber-200 bg-amber-50 text-amber-800",
+    };
+  }
+  return {
+    label: "Synced",
+    icon: Cloud,
+    className: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  };
 }
 
 type AppUpdateStatus = {
@@ -2502,6 +2646,198 @@ function AppUpdateControl() {
         </div>
       ) : null}
     </>
+  );
+}
+
+type SyncConflictSummary = {
+  _id: Id<"syncConflicts">;
+  entityType: "cr" | "assistantChat";
+  entityKey: string;
+  detectedAt: number;
+};
+
+function SyncConflictPanel({
+  conflicts,
+  resolvingConflictId,
+  onResolve,
+  onClose,
+}: {
+  conflicts: SyncConflictSummary[];
+  resolvingConflictId: Id<"syncConflicts"> | null;
+  onResolve: (
+    conflictId: Id<"syncConflicts">,
+    resolution: "keptCurrent" | "restoredConflict",
+  ) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-gray-950/45 p-5">
+      <section className="max-h-[80vh] w-full max-w-3xl overflow-y-auto border border-gray-200 bg-white shadow-2xl">
+        <div className="sticky top-0 flex items-start justify-between gap-4 border-b border-gray-200 bg-white p-5">
+          <div>
+            <p className={sectionLabel}>Shared data protection</p>
+            <h2 className="mt-1 text-xl font-semibold text-gray-950">
+              Resolve sync conflicts
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-gray-600">
+              Two laptops changed the same item before either received the other
+              change. Nothing was discarded: choose which preserved version
+              should become current.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 shrink-0 items-center justify-center border border-gray-200 text-gray-700 hover:bg-gray-50"
+            aria-label="Close conflicts"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="space-y-3 p-5">
+          {conflicts.length ? (
+            conflicts.map((conflict) => {
+              const resolving = resolvingConflictId === conflict._id;
+              return (
+                <article
+                  key={conflict._id}
+                  className="border border-red-200 bg-red-50/40 p-4"
+                >
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="font-semibold text-gray-950">
+                        {conflict.entityType === "cr"
+                          ? `CR ${conflict.entityKey}`
+                          : "AI chat history"}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Detected{" "}
+                        {new Date(conflict.detectedAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={resolvingConflictId !== null}
+                        onClick={() => onResolve(conflict._id, "keptCurrent")}
+                        className="border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Keep current
+                      </button>
+                      <button
+                        type="button"
+                        disabled={resolvingConflictId !== null}
+                        onClick={() =>
+                          onResolve(conflict._id, "restoredConflict")
+                        }
+                        className="border border-blue-700 bg-blue-700 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+                      >
+                        {resolving ? "Resolving..." : "Restore saved copy"}
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <div className="border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-900">
+              All sync conflicts are resolved.
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function InitialSyncGate({ status }: { status: SharingStatus }) {
+  const [switchingMode, setSwitchingMode] = useState<SharingMode | null>(null);
+  const [error, setError] = useState("");
+  const unavailable = [
+    "local-fallback",
+    "permission-error",
+    "retrying",
+  ].includes(status.syncState);
+
+  async function switchSharingMode(mode: "documents" | "off") {
+    setSwitchingMode(mode);
+    setError("");
+    try {
+      const response = await fetch("/api/sharing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      if (!response.ok) {
+        const result = (await response.json()) as { error?: string };
+        throw new Error(result.error ?? "Unable to change the shared hub.");
+      }
+      window.location.reload();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      setSwitchingMode(null);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-gray-950/55 p-5 backdrop-blur-sm">
+      <section className="w-full max-w-xl border border-gray-200 bg-white p-7 shadow-2xl">
+        <div className="flex h-12 w-12 items-center justify-center bg-blue-700 text-white">
+          {unavailable ? (
+            <CloudOff className="h-6 w-6" />
+          ) : (
+            <RefreshCw className="h-6 w-6 animate-spin" />
+          )}
+        </div>
+        <p className={cn("mt-5", sectionLabel)}>Safe first startup</p>
+        <h1 className="mt-1 text-2xl font-semibold text-gray-950">
+          {unavailable
+            ? "Connect to the shared data hub"
+            : "Preparing this laptop"}
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-gray-600">
+          {unavailable
+            ? "Editing is paused because this laptop has not imported the shared records yet. Connect to the corporate network or VPN, then retry."
+            : "Existing shared CRs, accounts, and AI chat history are being imported before editing is enabled."}
+        </p>
+        {status.message ? (
+          <p className="mt-3 border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+            {status.message}
+          </p>
+        ) : null}
+        <code className="mt-3 block break-all bg-gray-950 p-3 text-xs text-gray-100">
+          {status.path}
+        </code>
+        {error ? <p className="mt-3 text-sm text-red-700">{error}</p> : null}
+        <div className="mt-5 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="border border-blue-700 bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+          >
+            Retry
+          </button>
+          <button
+            type="button"
+            disabled={switchingMode !== null}
+            onClick={() => void switchSharingMode("documents")}
+            className="border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {switchingMode === "documents"
+              ? "Switching..."
+              : "Use Documents Hub"}
+          </button>
+          <button
+            type="button"
+            disabled={switchingMode !== null}
+            onClick={() => void switchSharingMode("off")}
+            className="border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {switchingMode === "off" ? "Switching..." : "Use Local Only"}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -2941,6 +3277,18 @@ function SettingsPage({
               returns.
             </p>
           ) : null}
+          {sharing?.syncState === "permission-error" ? (
+            <p className="mt-3 font-medium text-red-700">
+              The folder can be reached, but this Windows account does not have
+              both read and write access. Ask the folder owner for permission.
+            </p>
+          ) : null}
+          {sharing && sharing.mode !== "off" && !sharing.initialSyncComplete ? (
+            <p className="mt-3 font-medium text-blue-700">
+              Initial import is not complete. Editing remains paused until this
+              laptop has read the existing shared data.
+            </p>
+          ) : null}
           {sharingError ? (
             <p className="mt-3 font-medium text-red-700">{sharingError}</p>
           ) : null}
@@ -3001,6 +3349,7 @@ type SharingStatus = {
   syncState: string;
   lastSyncAt: number | null;
   message: string;
+  initialSyncComplete: boolean;
   options: {
     documents: string;
     corporate: string;
@@ -3008,9 +3357,41 @@ type SharingStatus = {
   };
 };
 
+function useSharingStatus() {
+  const [status, setStatus] = useState<SharingStatus | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let loading = false;
+    async function refresh() {
+      if (loading) return;
+      loading = true;
+      try {
+        const response = await fetch("/api/sharing", { cache: "no-store" });
+        if (!response.ok) return;
+        const result = (await response.json()) as SharingStatus;
+        if (active) setStatus(result);
+      } catch {
+        // The status pill will remain in its last known state while offline.
+      } finally {
+        loading = false;
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  return status;
+}
+
 function formatSharingState(state: string | undefined) {
   if (!state) return "Checking";
   if (state === "local-fallback") return "Local fallback";
+  if (state === "permission-error") return "Permission error";
   return state.replaceAll("-", " ");
 }
 

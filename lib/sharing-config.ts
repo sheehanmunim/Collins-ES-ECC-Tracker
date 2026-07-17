@@ -21,6 +21,11 @@ const supervisorStatusPath = path.join(
   ".convex",
   "shared-supervisor-status.json",
 );
+const syncStatePath = path.join(
+  /* turbopackIgnore: true */ process.cwd(),
+  ".convex",
+  "shared-sync-state.json",
+);
 const documentsPath = path.join(os.homedir(), "Documents", "ECC Tracker");
 const corporatePath = String.raw`\\huswlf0o\groups\Design Index\Ec&a Programs\PW Military ECC\Archive\ECC Tracker\Data`;
 
@@ -91,20 +96,30 @@ export function sharingOptions() {
 export function sharingStatus() {
   const selection = getSharingSelection();
   const supervisor = readJson(supervisorStatusPath);
+  const syncState = readJson(syncStatePath);
+  const matchingSupervisor =
+    supervisor?.mode === selection.mode && supervisor?.path === selection.path;
+  const matchingCompletedState =
+    syncState?.initialSyncComplete === true &&
+    typeof syncState.selectionPath === "string" &&
+    samePath(syncState.selectionPath, selection.path);
   return {
     ...selection,
     reachable:
       selection.mode === "off" ||
       fs.existsSync(/* turbopackIgnore: true */ selection.path),
-    syncState:
-      supervisor?.mode === selection.mode && supervisor?.path === selection.path
-        ? supervisor.state
-        : selection.mode === "off"
-          ? "off"
-          : "switching",
+    syncState: matchingSupervisor
+      ? supervisor.state
+      : selection.mode === "off"
+        ? "off"
+        : "switching",
     lastSyncAt:
       typeof supervisor?.lastSyncAt === "number" ? supervisor.lastSyncAt : null,
     message: typeof supervisor?.message === "string" ? supervisor.message : "",
+    initialSyncComplete:
+      selection.mode === "off" ||
+      (matchingSupervisor && supervisor.initialSyncComplete === true) ||
+      matchingCompletedState,
   };
 }
 

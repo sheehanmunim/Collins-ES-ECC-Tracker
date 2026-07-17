@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const statusPath = path.join(root, ".convex", "shared-supervisor-status.json");
+const syncStatePath = path.join(root, ".convex", "shared-sync-state.json");
 let child = null;
 let activeKey = "";
 let stopping = false;
@@ -29,6 +30,7 @@ while (!stopping) {
       ...selection,
       state: "off",
       message: "Sharing is disabled.",
+      initialSyncComplete: true,
     });
   } else if (!fs.existsSync(selection.path)) {
     stopChild();
@@ -37,11 +39,23 @@ while (!stopping) {
       state: "local-fallback",
       message:
         "The selected shared folder is unavailable. Working locally until access returns.",
+      initialSyncComplete: hasCompletedInitialSync(selection),
     });
     await delay(5_000);
     continue;
   } else if (!child && Date.now() >= nextRetryAt) {
-    startSync(selection);
+    const permission = testSharedFolderAccess(selection.path);
+    if (!permission.ok) {
+      writeStatus({
+        ...selection,
+        state: "permission-error",
+        message: `The shared folder is visible but cannot be read and written: ${permission.message}`,
+        initialSyncComplete: hasCompletedInitialSync(selection),
+      });
+      nextRetryAt = Date.now() + 5_000;
+    } else {
+      startSync(selection);
+    }
   }
   await delay(1_000);
 }
@@ -53,6 +67,7 @@ function startSync(selection) {
     ...selection,
     state: "starting",
     message: "Starting shared sync.",
+    initialSyncComplete: hasCompletedInitialSync(selection),
   });
   const syncProcess = spawn(
     process.execPath,
@@ -81,8 +96,52 @@ function startSync(selection) {
       message: signal
         ? `Sync stopped by ${signal}; retrying.`
         : `Sync exited with code ${code ?? "unknown"}; retrying.`,
+      initialSyncComplete: hasCompletedInitialSync(selection),
     });
   });
+}
+
+function testSharedFolderAccess(directory) {
+  const probePath = path.join(
+    directory,
+    `.ecc-write-test-${process.pid}-${Date.now()}.tmp`,
+  );
+  try {
+    if (!fs.statSync(directory).isDirectory()) {
+      return { ok: false, message: "The selected path is not a folder." };
+    }
+    fs.writeFileSync(probePath, "ECC shared-folder access test\n", {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    fs.readFileSync(probePath, "utf8");
+    fs.unlinkSync(probePath);
+    return { ok: true, message: "" };
+  } catch (error) {
+    try {
+      fs.rmSync(probePath, { force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+    return { ok: false, message: formatError(error) };
+  }
+}
+
+function hasCompletedInitialSync(selection) {
+  const saved = readJson(syncStatePath);
+  return Boolean(
+    saved?.initialSyncComplete &&
+      typeof saved.selectionPath === "string" &&
+      samePath(saved.selectionPath, selection.path),
+  );
+}
+
+function samePath(left, right) {
+  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+}
+
+function formatError(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function stop() {

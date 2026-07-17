@@ -57,6 +57,13 @@ const syncEventValidator = v.object({
   entityKey: v.string(),
   updatedAt: v.number(),
   payload: v.string(),
+  protocolVersion: v.optional(v.number()),
+  baseEventId: v.optional(v.string()),
+  logicalTime: v.optional(v.number()),
+  resolvesEventIds: v.optional(v.array(v.string())),
+  conflictResolution: v.optional(
+    v.union(v.literal("keptCurrent"), v.literal("restoredConflict")),
+  ),
 });
 
 export const configure = mutation({
@@ -64,6 +71,62 @@ export const configure = mutation({
   handler: async (ctx, args) => {
     await setSetting(ctx, "secret", args.secret);
     await setSetting(ctx, "hubId", args.hubId);
+    return null;
+  },
+});
+
+export const listConflicts = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAuthenticatedUser(ctx);
+    const conflicts = await ctx.db
+      .query("syncConflicts")
+      .withIndex("by_status_and_detectedAt", (q) => q.eq("status", "open"))
+      .order("desc")
+      .take(100);
+    return conflicts.map(({ losingPayload, ...conflict }) => {
+      void losingPayload;
+      return conflict;
+    });
+  },
+});
+
+export const resolveConflict = mutation({
+  args: {
+    conflictId: v.id("syncConflicts"),
+    resolution: v.union(
+      v.literal("keptCurrent"),
+      v.literal("restoredConflict"),
+    ),
+  },
+  handler: async (ctx, args) => {
+    await requireAuthenticatedUser(ctx);
+    const conflict = await ctx.db.get(args.conflictId);
+    if (!conflict || conflict.status === "resolved") return null;
+
+    const now = Date.now();
+    if (args.resolution === "restoredConflict") {
+      const payload = parsePayload(conflict.losingPayload);
+      if (payload.kind === "cr") {
+        await applyCrPayload(ctx, payload, now, true);
+      } else {
+        await applyAssistantChatPayload(ctx, payload, now, true);
+      }
+    }
+
+    await queueCurrentEntityVersion(ctx, {
+      entityType: conflict.entityType,
+      entityKey: conflict.entityKey,
+      updatedAt: now,
+      resolvesEventIds: [conflict.losingEventId],
+      conflictResolution: args.resolution,
+    });
+    await markConflictResolution(
+      ctx,
+      conflict.losingEventId,
+      args.resolution,
+      now,
+    );
     return null;
   },
 });
@@ -111,10 +174,86 @@ export const applyEvents = mutation({
       }
 
       const payload = parsePayload(event.payload);
-      if (payload.kind === "cr") {
-        await applyCrPayload(ctx, payload, event.updatedAt);
+      const head = await getEntityHead(ctx, event.entityType, event.entityKey);
+      const isProtocol2 =
+        event.protocolVersion === 2 && typeof event.logicalTime === "number";
+
+      if (head?.eventId === event.eventId) {
+        // This replica may encounter its own published event after rebuilding
+        // its filesystem cursor. The local mutation already applied it.
+      } else if (!isProtocol2) {
+        const incomingIsNewer = !head || event.updatedAt >= head.updatedAt;
+        if (incomingIsNewer) {
+          await applySyncPayload(ctx, payload, event.updatedAt, false);
+          await setEntityHead(ctx, {
+            entityType: event.entityType,
+            entityKey: event.entityKey,
+            eventId: event.eventId,
+            logicalTime: (head?.logicalTime ?? 0) + 1,
+            updatedAt: event.updatedAt,
+          });
+        }
       } else {
-        await applyAssistantChatPayload(ctx, payload, event.updatedAt);
+        const logicalTime = event.logicalTime ?? 1;
+        const isLinear = !head || event.baseEventId === head.eventId;
+        if (isLinear) {
+          await applySyncPayload(ctx, payload, event.updatedAt, true);
+          await setEntityHead(ctx, {
+            entityType: event.entityType,
+            entityKey: event.entityKey,
+            eventId: event.eventId,
+            logicalTime,
+            updatedAt: event.updatedAt,
+          });
+        } else {
+          const incomingWins =
+            compareEventRank(
+              logicalTime,
+              event.eventId,
+              head.logicalTime,
+              head.eventId,
+            ) > 0;
+          if (incomingWins) {
+            const currentPayload = await snapshotEntityPayload(
+              ctx,
+              event.entityType,
+              event.entityKey,
+            );
+            if (currentPayload) {
+              await preserveConflict(ctx, {
+                entityType: event.entityType,
+                entityKey: event.entityKey,
+                winningEventId: event.eventId,
+                losingEventId: head.eventId,
+                losingPayload: currentPayload,
+              });
+            }
+            await applySyncPayload(ctx, payload, event.updatedAt, true);
+            await setEntityHead(ctx, {
+              entityType: event.entityType,
+              entityKey: event.entityKey,
+              eventId: event.eventId,
+              logicalTime,
+              updatedAt: event.updatedAt,
+            });
+          } else {
+            await preserveConflict(ctx, {
+              entityType: event.entityType,
+              entityKey: event.entityKey,
+              winningEventId: head.eventId,
+              losingEventId: event.eventId,
+              losingPayload: event.payload,
+            });
+          }
+        }
+      }
+      for (const resolvedEventId of event.resolvesEventIds ?? []) {
+        await markConflictResolution(
+          ctx,
+          resolvedEventId,
+          event.conflictResolution ?? "keptCurrent",
+          event.updatedAt,
+        );
       }
       await ctx.db.insert("syncAppliedEvents", {
         eventId: event.eventId,
@@ -157,6 +296,7 @@ export async function queueCrSnapshot(
   ctx: MutationCtx,
   crId: Id<"crs">,
   updatedAt = Date.now(),
+  options: QueueOptions = {},
 ) {
   const cr = await ctx.db.get(crId);
   if (!cr) return;
@@ -194,21 +334,23 @@ export async function queueCrSnapshot(
     positions: positions.map((row) => stripChild(row)),
     requirements: requirements.map((row) => stripChild(row)),
   };
-  await enqueue(ctx, "cr", cr.crNumber, updatedAt, payload);
+  await enqueue(ctx, "cr", cr.crNumber, updatedAt, payload, options);
 }
 
 export async function queueCrDeletion(
   ctx: MutationCtx,
   crNumber: string,
   updatedAt = Date.now(),
+  options: QueueOptions = {},
 ) {
   const payload: CrTombstone = { kind: "cr", deleted: true, crNumber };
-  await enqueue(ctx, "cr", crNumber, updatedAt, payload);
+  await enqueue(ctx, "cr", crNumber, updatedAt, payload, options);
 }
 
 export async function queueAssistantChatSnapshot(
   ctx: MutationCtx,
   chat: Doc<"assistantChatSessions">,
+  options: QueueOptions = {},
 ) {
   const payload: AssistantChatSnapshot = {
     kind: "assistantChat",
@@ -220,8 +362,15 @@ export async function queueAssistantChatSnapshot(
     `${chat.ownerKey}:${chat.chatId}`,
     chat.updatedAt,
     payload,
+    options,
   );
 }
+
+type ConflictResolution = "keptCurrent" | "restoredConflict";
+type QueueOptions = {
+  resolvesEventIds?: string[];
+  conflictResolution?: ConflictResolution;
+};
 
 async function enqueue(
   ctx: MutationCtx,
@@ -229,13 +378,29 @@ async function enqueue(
   entityKey: string,
   updatedAt: number,
   payload: SyncPayload,
+  options: QueueOptions = {},
 ) {
+  const head = await getEntityHead(ctx, entityType, entityKey);
+  const eventId = crypto.randomUUID();
+  const logicalTime = (head?.logicalTime ?? 0) + 1;
   await ctx.db.insert("syncOutbox", {
-    eventId: crypto.randomUUID(),
+    eventId,
     entityType,
     entityKey,
     updatedAt,
     payload: JSON.stringify(payload),
+    protocolVersion: 2,
+    baseEventId: head?.eventId,
+    logicalTime,
+    resolvesEventIds: options.resolvesEventIds,
+    conflictResolution: options.conflictResolution,
+  });
+  await setEntityHead(ctx, {
+    entityType,
+    entityKey,
+    eventId,
+    logicalTime,
+    updatedAt,
   });
 }
 
@@ -243,13 +408,14 @@ async function applyCrPayload(
   ctx: MutationCtx,
   payload: CrSnapshot | CrTombstone,
   updatedAt: number,
+  force = false,
 ) {
   const crNumber = payload.deleted ? payload.crNumber : payload.cr.crNumber;
   const existing = await ctx.db
     .query("crs")
     .withIndex("by_crNumber", (q) => q.eq("crNumber", crNumber))
     .unique();
-  if (existing && existing.lastUpdatedAt > updatedAt) return;
+  if (!force && existing && existing.lastUpdatedAt > updatedAt) return;
 
   if (payload.deleted) {
     if (existing) await deleteCrAggregate(ctx, existing._id);
@@ -282,6 +448,7 @@ async function applyAssistantChatPayload(
   ctx: MutationCtx,
   payload: AssistantChatSnapshot,
   updatedAt: number,
+  force = false,
 ) {
   const chat = payload.chat;
   const existing = await ctx.db
@@ -290,10 +457,230 @@ async function applyAssistantChatPayload(
       q.eq("ownerKey", chat.ownerKey).eq("chatId", chat.chatId),
     )
     .unique();
-  if (existing && existing.updatedAt > updatedAt) return;
+  if (!force && existing && existing.updatedAt > updatedAt) return;
   const next = { ...chat, updatedAt };
   if (existing) await ctx.db.replace(existing._id, next);
   else await ctx.db.insert("assistantChatSessions", next);
+}
+
+async function applySyncPayload(
+  ctx: MutationCtx,
+  payload: SyncPayload,
+  updatedAt: number,
+  force: boolean,
+) {
+  if (payload.kind === "cr") {
+    await applyCrPayload(ctx, payload, updatedAt, force);
+  } else {
+    await applyAssistantChatPayload(ctx, payload, updatedAt, force);
+  }
+}
+
+async function queueCurrentEntityVersion(
+  ctx: MutationCtx,
+  args: {
+    entityType: "cr" | "assistantChat";
+    entityKey: string;
+    updatedAt: number;
+    resolvesEventIds: string[];
+    conflictResolution: ConflictResolution;
+  },
+) {
+  const options: QueueOptions = {
+    resolvesEventIds: args.resolvesEventIds,
+    conflictResolution: args.conflictResolution,
+  };
+  if (args.entityType === "cr") {
+    const cr = await ctx.db
+      .query("crs")
+      .withIndex("by_crNumber", (q) => q.eq("crNumber", args.entityKey))
+      .unique();
+    if (!cr) {
+      await queueCrDeletion(ctx, args.entityKey, args.updatedAt, options);
+      return;
+    }
+    await ctx.db.patch(cr._id, { lastUpdatedAt: args.updatedAt });
+    await queueCrSnapshot(ctx, cr._id, args.updatedAt, options);
+    return;
+  }
+
+  const separator = args.entityKey.lastIndexOf(":");
+  if (separator < 1) throw new Error("Invalid assistant chat sync key.");
+  const ownerKey = args.entityKey.slice(0, separator);
+  const chatId = args.entityKey.slice(separator + 1);
+  const chat = await ctx.db
+    .query("assistantChatSessions")
+    .withIndex("by_ownerKey_and_chatId", (q) =>
+      q.eq("ownerKey", ownerKey).eq("chatId", chatId),
+    )
+    .unique();
+  if (!chat) return;
+  await ctx.db.patch(chat._id, { updatedAt: args.updatedAt });
+  const updated = await ctx.db.get(chat._id);
+  if (updated) await queueAssistantChatSnapshot(ctx, updated, options);
+}
+
+async function snapshotEntityPayload(
+  ctx: MutationCtx,
+  entityType: "cr" | "assistantChat",
+  entityKey: string,
+) {
+  if (entityType === "cr") {
+    const cr = await ctx.db
+      .query("crs")
+      .withIndex("by_crNumber", (q) => q.eq("crNumber", entityKey))
+      .unique();
+    if (!cr) {
+      const tombstone: CrTombstone = {
+        kind: "cr",
+        deleted: true,
+        crNumber: entityKey,
+      };
+      return JSON.stringify(tombstone);
+    }
+    const [updates, actions, approvals, positions, requirements] =
+      await Promise.all([
+        ctx.db
+          .query("crUpdates")
+          .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", cr._id))
+          .take(500),
+        ctx.db
+          .query("crActions")
+          .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", cr._id))
+          .take(500),
+        ctx.db
+          .query("crApprovals")
+          .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", cr._id))
+          .take(500),
+        ctx.db
+          .query("crWhiteboardPositions")
+          .withIndex("by_crId", (q) => q.eq("crId", cr._id))
+          .take(500),
+        ctx.db
+          .query("crWorkflowRequirementChecks")
+          .withIndex("by_crId", (q) => q.eq("crId", cr._id))
+          .take(500),
+      ]);
+    const snapshot: CrSnapshot = {
+      kind: "cr",
+      deleted: false,
+      cr: stripSystem(cr),
+      updates: updates.map((row) => stripChild(row)),
+      actions: actions.map((row) => stripChild(row)),
+      approvals: approvals.map((row) => stripChild(row)),
+      positions: positions.map((row) => stripChild(row)),
+      requirements: requirements.map((row) => stripChild(row)),
+    };
+    return JSON.stringify(snapshot);
+  }
+
+  const separator = entityKey.lastIndexOf(":");
+  if (separator < 1) return null;
+  const ownerKey = entityKey.slice(0, separator);
+  const chatId = entityKey.slice(separator + 1);
+  const chat = await ctx.db
+    .query("assistantChatSessions")
+    .withIndex("by_ownerKey_and_chatId", (q) =>
+      q.eq("ownerKey", ownerKey).eq("chatId", chatId),
+    )
+    .unique();
+  if (!chat) return null;
+  const snapshot: AssistantChatSnapshot = {
+    kind: "assistantChat",
+    chat: stripSystem(chat),
+  };
+  return JSON.stringify(snapshot);
+}
+
+async function preserveConflict(
+  ctx: MutationCtx,
+  args: {
+    entityType: "cr" | "assistantChat";
+    entityKey: string;
+    winningEventId: string;
+    losingEventId: string;
+    losingPayload: string;
+  },
+) {
+  const existing = await ctx.db
+    .query("syncConflicts")
+    .withIndex("by_losingEventId", (q) =>
+      q.eq("losingEventId", args.losingEventId),
+    )
+    .unique();
+  if (existing) return;
+  const savedResolution = await getSetting(
+    ctx,
+    `resolvedConflict:${args.losingEventId}`,
+  );
+  const resolution =
+    savedResolution === "keptCurrent" || savedResolution === "restoredConflict"
+      ? savedResolution
+      : null;
+  await ctx.db.insert("syncConflicts", {
+    ...args,
+    detectedAt: Date.now(),
+    status: resolution ? "resolved" : "open",
+    resolution: resolution ?? undefined,
+    resolvedAt: resolution ? Date.now() : undefined,
+  });
+}
+
+async function markConflictResolution(
+  ctx: MutationCtx,
+  losingEventId: string,
+  resolution: ConflictResolution,
+  resolvedAt: number,
+) {
+  await setSetting(ctx, `resolvedConflict:${losingEventId}`, resolution);
+  const conflict = await ctx.db
+    .query("syncConflicts")
+    .withIndex("by_losingEventId", (q) => q.eq("losingEventId", losingEventId))
+    .unique();
+  if (conflict) {
+    await ctx.db.patch(conflict._id, {
+      status: "resolved",
+      resolution,
+      resolvedAt,
+    });
+  }
+}
+
+async function getEntityHead(
+  ctx: Pick<QueryCtx | MutationCtx, "db">,
+  entityType: "cr" | "assistantChat",
+  entityKey: string,
+) {
+  return await ctx.db
+    .query("syncEntityHeads")
+    .withIndex("by_entityType_and_entityKey", (q) =>
+      q.eq("entityType", entityType).eq("entityKey", entityKey),
+    )
+    .unique();
+}
+
+async function setEntityHead(
+  ctx: MutationCtx,
+  head: {
+    entityType: "cr" | "assistantChat";
+    entityKey: string;
+    eventId: string;
+    logicalTime: number;
+    updatedAt: number;
+  },
+) {
+  const existing = await getEntityHead(ctx, head.entityType, head.entityKey);
+  if (existing) await ctx.db.replace(existing._id, head);
+  else await ctx.db.insert("syncEntityHeads", head);
+}
+
+function compareEventRank(
+  leftTime: number,
+  leftEventId: string,
+  rightTime: number,
+  rightEventId: string,
+) {
+  return leftTime - rightTime || leftEventId.localeCompare(rightEventId);
 }
 
 async function deleteCrAggregate(ctx: MutationCtx, crId: Id<"crs">) {
@@ -334,6 +721,14 @@ async function requireSyncSecret(
 ) {
   const expected = await getSetting(ctx, "secret");
   if (!expected || expected !== secret) throw new Error("Invalid sync secret.");
+}
+
+async function requireAuthenticatedUser(
+  ctx: Pick<QueryCtx | MutationCtx, "auth">,
+) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) throw new Error("Authentication required.");
+  return identity;
 }
 
 async function getSetting(

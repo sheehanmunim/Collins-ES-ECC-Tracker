@@ -228,9 +228,12 @@ Start the app normally, open **Settings → Shared data location**, and choose:
 - **Corporate hub** — `\\huswlf0o\groups\Design Index\Ec&a Programs\PW Military ECC\Archive\ECC Tracker\Data`
 - **Local Only** — no shared-folder reads or writes
 
-Corporate is the default preference. If its folder is unavailable, the app
-automatically works in Local Only fallback mode and resumes corporate syncing
-when access returns. The app stays running while the background supervisor
+Corporate is the default preference. On a laptop that has synced before, an
+unavailable folder uses the local copy and automatically resumes corporate
+syncing when access returns. On a new laptop, editing remains paused until the
+first shared import completes, preventing an empty or stale local database from
+being published over team data. The startup check also verifies actual read and
+write access, not just that the folder exists. The app stays running while the background supervisor
 starts, stops, or repoints synchronization. Turning sharing off does not delete
 local or shared data. When a shared mode is selected again, the existing local
 database reconciles with that hub; therefore, switching hubs can publish the
@@ -243,9 +246,11 @@ Everyone then uses the normal launcher:
 ```
 
 The local sync process publishes changes and imports new events about every
-1.5 seconds. Different CRs merge independently. If two offline laptops edit the
-same CR, the later edit wins for that CR; the immutable event history remains
-available for audit and recovery.
+1.5 seconds. Different CRs merge independently. If two laptops edit the same CR
+before either receives the other change, a deterministic winner keeps every
+laptop converged and the losing snapshot is preserved as a visible conflict.
+Use the red **Conflict** control to keep the current version or restore the
+preserved copy; the decision is then synchronized to the other laptops.
 
 In shared-team mode, account enrollment also uses the shared folder. The first
 successful sign-up or sign-in writes one account record containing the user's
@@ -328,7 +333,10 @@ npm run backup:verify  # verify the newest snapshot checksum and contents
 
 ## In-App Updates
 
-The tracker checks its tracked GitHub branch every five minutes. When new
+The Windows launcher performs a fast-forward-only pull from `origin/main`
+before every startup. If GitHub is unavailable, Git is missing, or the update
+cannot be applied safely, it keeps the installed version and still starts the
+tracker. While running, the tracker also checks `main` every five minutes. When new
 commits are available, an **Update** button appears in the top toolbar beside
 the existing CR, AI, fullscreen, and settings controls. Selecting it fetches
 the update and applies a fast-forward-only Git merge. After it finishes, close

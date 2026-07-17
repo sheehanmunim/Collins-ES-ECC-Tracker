@@ -256,6 +256,13 @@ export default defineSchema({
     entityKey: v.string(),
     updatedAt: v.number(),
     payload: v.string(),
+    protocolVersion: v.optional(v.number()),
+    baseEventId: v.optional(v.string()),
+    logicalTime: v.optional(v.number()),
+    resolvesEventIds: v.optional(v.array(v.string())),
+    conflictResolution: v.optional(
+      v.union(v.literal("keptCurrent"), v.literal("restoredConflict")),
+    ),
   })
     .index("by_eventId", ["eventId"])
     .index("by_updatedAt", ["updatedAt"]),
@@ -267,4 +274,31 @@ export default defineSchema({
     key: v.string(),
     value: v.string(),
   }).index("by_key", ["key"]),
+  syncEntityHeads: defineTable({
+    entityType: v.union(v.literal("cr"), v.literal("assistantChat")),
+    entityKey: v.string(),
+    eventId: v.string(),
+    logicalTime: v.number(),
+    updatedAt: v.number(),
+  }).index("by_entityType_and_entityKey", ["entityType", "entityKey"]),
+  syncConflicts: defineTable({
+    entityType: v.union(v.literal("cr"), v.literal("assistantChat")),
+    entityKey: v.string(),
+    detectedAt: v.number(),
+    status: v.union(v.literal("open"), v.literal("resolved")),
+    winningEventId: v.string(),
+    losingEventId: v.string(),
+    losingPayload: v.string(),
+    resolution: v.optional(
+      v.union(v.literal("keptCurrent"), v.literal("restoredConflict")),
+    ),
+    resolvedAt: v.optional(v.number()),
+  })
+    .index("by_losingEventId", ["losingEventId"])
+    .index("by_status_and_detectedAt", ["status", "detectedAt"])
+    .index("by_entityType_and_entityKey_and_status", [
+      "entityType",
+      "entityKey",
+      "status",
+    ]),
 });
